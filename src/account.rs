@@ -1412,4 +1412,29 @@ mod tests {
         assert_eq!(rows[1].as_array().unwrap()[1].as_f64(), Some(99.0));
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn warm_health_cache_serves_following_reads() {
+        let root = dir();
+        let id = "warm-account";
+        let account_dir = root.join("accounts").join(id);
+        fs::create_dir_all(&account_dir).unwrap();
+        fs::write(
+            account_dir.join("health.json"),
+            br#"{"tables":{"heart_rate_points":{"columns":["ts","bpm"],"key":["ts"],"rows":[[1,70],[2,71]]}}}"#,
+        )
+        .unwrap();
+        fs::write(account_dir.join("health.patches.jsonl"), b"").unwrap();
+
+        warm_health_cache(&root);
+        let merged = merged_health_tables(&root, id, &["heart_rate_points"]).expect("warmed merge");
+        let rows = merged
+            .get("tables")
+            .and_then(|value| value.get("heart_rate_points"))
+            .and_then(|value| value.get("rows"))
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
 }
