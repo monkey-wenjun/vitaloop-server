@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets
+      - run: cargo test --release
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t vitaloop-server:ci .
+      - name: Smoke test container
+        run: |
+          docker run -d --name server -p 127.0.0.1:8793:8793 vitaloop-server:ci
+          sleep 2
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8793/)
+          echo "GET / -> $code"
+          test "$code" != 000
+          docker rm -f server

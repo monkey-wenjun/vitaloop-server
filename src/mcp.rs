@@ -101,7 +101,10 @@ fn process(req: &Request, root: &Path) -> (u16, Vec<u8>) {
         // 通知没有 id，不回 JSON-RPC 响应。
         return (202, Vec::new());
     };
-    let params = message.get("params").cloned().unwrap_or(Json::Object(Vec::new()));
+    let params = message
+        .get("params")
+        .cloned()
+        .unwrap_or(Json::Object(Vec::new()));
 
     match method {
         "initialize" => {
@@ -145,7 +148,10 @@ fn process(req: &Request, root: &Path) -> (u16, Vec<u8>) {
                 .cloned()
                 .unwrap_or(Json::Object(Vec::new()));
             if args.as_object().is_none() {
-                return (400, error_body(Some(id), -32602, "arguments must be an object"));
+                return (
+                    400,
+                    error_body(Some(id), -32602, "arguments must be an object"),
+                );
             }
             let result = match call_tool(root, &account_id, name, &args) {
                 Ok(payload) => tool_ok(payload),
@@ -285,12 +291,16 @@ fn summary(root: &Path, account_id: &str, args: &Json) -> Result<Json, String> {
 
     let sleep = object(&[
         ("avg_sleep_minutes", number(avg(&daily, "sleep_minutes"))),
-        ("avg_deep_minutes", number(avg(&daily, "deep_sleep_minutes"))),
+        (
+            "avg_deep_minutes",
+            number(avg(&daily, "deep_sleep_minutes")),
+        ),
         ("avg_rem_minutes", number(avg(&daily, "rem_sleep_minutes"))),
         ("avg_awake_minutes", number(avg(&daily, "awake_minutes"))),
         (
             "latest_watch_score",
-            beds.first().map_or(Json::Null, |row| opt(row, "watch_score")),
+            beds.first()
+                .map_or(Json::Null, |row| opt(row, "watch_score")),
         ),
         (
             "latest_watch_efficiency",
@@ -301,7 +311,10 @@ fn summary(root: &Path, account_id: &str, args: &Json) -> Result<Json, String> {
 
     let activity = object(&[
         ("avg_steps", number(avg(&daily, "steps"))),
-        ("avg_active_calories", number(avg(&daily, "active_calories"))),
+        (
+            "avg_active_calories",
+            number(avg(&daily, "active_calories")),
+        ),
         ("avg_distance_m", number(avg(&daily, "distance_m"))),
         ("avg_active_minutes", number(avg(&daily, "active_minutes"))),
     ]);
@@ -388,12 +401,14 @@ fn metric_tool(
         .into_iter()
         .filter(|row| match wanted {
             Some(metric) => row.get("metric").and_then(Json::as_str) == Some(metric),
-            None => allowed.is_empty()
-                || row
-                    .get("metric")
-                    .and_then(Json::as_str)
-                    .map(|m| allowed.contains(&m))
-                    .unwrap_or(false),
+            None => {
+                allowed.is_empty()
+                    || row
+                        .get("metric")
+                        .and_then(Json::as_str)
+                        .map(|m| allowed.contains(&m))
+                        .unwrap_or(false)
+            }
         })
         .collect();
     let rows = filtered(rows, has_time, from, to, limit);
@@ -543,7 +558,10 @@ fn is_time_key(name: &str) -> bool {
 fn project(row: &Json, keep: &[&str]) -> Json {
     let fields = keep
         .iter()
-        .filter_map(|key| row.get(key).map(|value| ((*key).to_string(), value.clone())))
+        .filter_map(|key| {
+            row.get(key)
+                .map(|value| ((*key).to_string(), value.clone()))
+        })
         .collect();
     Json::Object(fields)
 }
@@ -562,23 +580,28 @@ fn avg(rows: &[Json], key: &str) -> Option<f64> {
 
 fn first_value(rows: &[Json], key: &str) -> Json {
     rows.iter()
-        .find_map(|row| row.get(key).filter(|value| !matches!(value, Json::Null)).cloned())
+        .find_map(|row| {
+            row.get(key)
+                .filter(|value| !matches!(value, Json::Null))
+                .cloned()
+        })
         .unwrap_or(Json::Null)
 }
 
 fn metric_values(rows: &[Json], metric: &str) -> Json {
     rows.iter()
         .find(|row| row.get("metric").and_then(Json::as_str) == Some(metric))
-        .map(|row| {
-            object(&[
-                ("value", opt(row, "value")),
-                ("ts_ms", opt(row, "ts_ms")),
-            ])
-        })
+        .map(|row| object(&[("value", opt(row, "value")), ("ts_ms", opt(row, "ts_ms"))]))
         .unwrap_or(Json::Null)
 }
 
-fn window_reply(table: &str, from: Option<f64>, to: Option<f64>, limit: usize, rows: Vec<Json>) -> Json {
+fn window_reply(
+    table: &str,
+    from: Option<f64>,
+    to: Option<f64>,
+    limit: usize,
+    rows: Vec<Json>,
+) -> Json {
     object(&[
         ("table", s(table)),
         ("count", Json::Number(rows.len() as f64)),
@@ -714,7 +737,10 @@ fn window_schema(with_limit: bool, with_metric: bool) -> Json {
         props.push((k("limit"), int_prop("最多返回行数，默认 200，上限 2000")));
     }
     if with_metric {
-        props.push((k("metric"), str_prop("只取某一个指标，如 skin_temp / body_temp")));
+        props.push((
+            k("metric"),
+            str_prop("只取某一个指标，如 skin_temp / body_temp"),
+        ));
     }
     object_schema(props)
 }
@@ -764,10 +790,7 @@ fn tool_error(message: &str) -> Json {
     object(&[
         (
             "content",
-            Json::Array(vec![object(&[
-                ("type", s("text")),
-                ("text", s(message)),
-            ])]),
+            Json::Array(vec![object(&[("type", s("text")), ("text", s(message))])]),
         ),
         ("isError", Json::Bool(true)),
     ])
@@ -789,10 +812,7 @@ fn error_body(id: Option<Json>, code: i64, message: &str) -> Vec<u8> {
         ("id", id.unwrap_or(Json::Null)),
         (
             "error",
-            object(&[
-                ("code", Json::Number(code as f64)),
-                ("message", s(message)),
-            ]),
+            object(&[("code", Json::Number(code as f64)), ("message", s(message))]),
         ),
     ])
     .render()
@@ -1123,7 +1143,10 @@ mod tests {
         let result = f.call("spo2", &args);
         let rows = rows(&result);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].get("date_day").and_then(Json::as_f64), Some(20001.0));
+        assert_eq!(
+            rows[0].get("date_day").and_then(Json::as_f64),
+            Some(20001.0)
+        );
         assert_eq!(rows[0].get("spo2").and_then(Json::as_f64), Some(96.0));
         let _ = fs::remove_dir_all(&f.root);
     }
@@ -1150,19 +1173,31 @@ mod tests {
         assert!((avg_diastolic - 247.0 / 3.0).abs() < 1e-9);
 
         let sleep = s.get("sleep").unwrap();
-        assert_eq!(sleep.get("avg_sleep_minutes").and_then(Json::as_f64), Some(410.0));
+        assert_eq!(
+            sleep.get("avg_sleep_minutes").and_then(Json::as_f64),
+            Some(410.0)
+        );
         assert_eq!(
             sleep.get("latest_watch_score").and_then(Json::as_f64),
             Some(88.0)
         );
 
         let heart = s.get("heart").unwrap();
-        assert_eq!(heart.get("latest_resting_hr").and_then(Json::as_f64), Some(59.0));
-        assert_eq!(heart.get("latest_hrv_ms").and_then(Json::as_f64), Some(47.0));
+        assert_eq!(
+            heart.get("latest_resting_hr").and_then(Json::as_f64),
+            Some(59.0)
+        );
+        assert_eq!(
+            heart.get("latest_hrv_ms").and_then(Json::as_f64),
+            Some(47.0)
+        );
 
         let vitals = s.get("vitals").unwrap();
         assert_eq!(vitals.get("latest_spo2").and_then(Json::as_f64), Some(96.0));
-        assert_eq!(vitals.get("latest_stress").and_then(Json::as_f64), Some(32.0));
+        assert_eq!(
+            vitals.get("latest_stress").and_then(Json::as_f64),
+            Some(32.0)
+        );
         assert_eq!(
             vitals
                 .get("latest_body_temp_c")
@@ -1182,10 +1217,7 @@ mod tests {
         assert_eq!(s.get("bed_count").and_then(Json::as_f64), Some(1.0));
         assert_eq!(s.get("stage_count").and_then(Json::as_f64), Some(2.0));
         let bed = s.get("bed").and_then(Json::as_array).unwrap();
-        assert_eq!(
-            bed[0].get("watch_score").and_then(Json::as_f64),
-            Some(88.0)
-        );
+        assert_eq!(bed[0].get("watch_score").and_then(Json::as_f64), Some(88.0));
         let _ = fs::remove_dir_all(&f.root);
     }
 
@@ -1193,7 +1225,11 @@ mod tests {
     fn heart_rate_defaults_to_last_24h_and_sorts_desc() {
         let f = Fixture::new();
         let result = f.call("heart_rate", "{}");
-        assert_eq!(rows(&result).len(), 0, "1970 年的采样不该落进默认 24 小时窗口");
+        assert_eq!(
+            rows(&result).len(),
+            0,
+            "1970 年的采样不该落进默认 24 小时窗口"
+        );
 
         let result = f.call("heart_rate", r#"{"from_ms":0}"#);
         let rows = rows(&result);

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem without credentials or health data
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include session tokens, `VITALOOP_BLOG_TOKEN`, account ids,
+        health snapshots, server addresses, or unsanitized logs.
+  - type: input
+    id: version
+    attributes:
+      label: vitaloop-server version or commit
+    validations:
+      required: true
+  - type: input
+    id: deploy
+    attributes:
+      label: Deployment method and host OS
+      description: For example docker compose on Linux x86_64.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove bearer tokens, account identifiers, and health data.
