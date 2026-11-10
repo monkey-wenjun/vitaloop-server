@@ -1,0 +1,22 @@
+[package]
+name = "vitaloop-server"
+version = "0.1.0"
+edition = "2021"
+description = "Vitaloop 健康数据同步 / 博客数据 / 地图代理 + MCP 只读接口"
+license = "MIT"
+
+[[bin]]
+name = "vitaloop-server"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[dependencies]
+# 只引 gzip：客户端旧版上传的是 gzip 快照，瓦片上游也返回 gzip。
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
