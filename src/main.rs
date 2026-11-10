@@ -74,7 +74,10 @@ fn main() {
         Err(error) => eprintln!("地图目录预热失败：{error}"),
     });
     let warm_root = state.data.clone();
-    thread::spawn(move || account::warm_workout_cache(&warm_root));
+    thread::spawn(move || {
+        account::warm_workout_cache(&warm_root);
+        account::warm_health_cache(&warm_root);
+    });
 
     let listener = match TcpListener::bind(&bind) {
         Ok(l) => l,

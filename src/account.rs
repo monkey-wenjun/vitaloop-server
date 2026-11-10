@@ -70,6 +70,21 @@ pub fn warm_workout_cache(root: &Path) {
     }
 }
 
+/// 启动时预热合并健康缓存（与运动缓存共用同一次全量解析），
+/// 首个 heart_rate 这类大表 MCP 查询不用重放整条补丁链。
+pub fn warm_health_cache(root: &Path) {
+    let Ok(entries) = fs::read_dir(accounts_dir(root)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(id) = entry.file_name().to_str() {
+                let _ = cached_merged_health(root, id);
+            }
+        }
+    }
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
