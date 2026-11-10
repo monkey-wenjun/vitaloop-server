@@ -15,13 +15,20 @@
 
 ## 构建
 
-```bash
-# 静态 musl 二进制
-cargo build --release --target x86_64-unknown-linux-musl
+推荐直接用 Docker Compose（多阶段构建：rust 镜像内编译静态 musl 二进制，运行镜像仍是 `scratch`）：
 
-# 容器（先把二进制放到项目根目录）
-cp target/x86_64-unknown-linux-musl/release/vitaloop-server .
+```bash
+docker compose up -d   # 构建镜像并监听 127.0.0.1:8793，数据卷 vitaloop-data 挂 /data
+```
+
+手动构建：
+
+```bash
+# 容器（Dockerfile 自带编译阶段，无需预置二进制）
 docker build -t vitaloop-server:latest .
+
+# 或本机静态 musl 二进制
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 运行：
@@ -33,7 +40,7 @@ docker run -d --name vitaloop-server -p 127.0.0.1:8793:8793 \
   -v vitaloop-data:/data vitaloop-server:latest
 ```
 
-`docker compose up -d` 使用同目录的 `docker-compose.yml`，数据卷 `vitaloop-data` 挂在 `/data`。生产环境用 Nginx/Caddy 做 HTTPS 反代到 `127.0.0.1:8793`。
+生产环境用 Nginx/Caddy 做 HTTPS 反代到 `127.0.0.1:8793`。
 
 ### 配置
 
