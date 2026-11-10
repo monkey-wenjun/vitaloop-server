@@ -194,11 +194,32 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
     respond(&mut stream, 404, "text/plain", b"not found", None)
 }
 
+fn public_base(req: &Request) -> String {
+    if let Ok(value) = std::env::var("PUBLIC_BASE_URL") {
+        let value = value.trim().trim_end_matches('/');
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+    let proto = req
+        .headers
+        .get("x-forwarded-proto")
+        .map(|value| value.trim())
+        .filter(|value| *value == "http" || *value == "https")
+        .unwrap_or("http");
+    match req
+        .headers
+        .get("host")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(host) => format!("{proto}://{host}"),
+        None => "http://127.0.0.1:8793".into(),
+    }
+}
+
 fn route_map(stream: &mut TcpStream, req: &Request, map: &MapTiles) -> Option<std::io::Result<()>> {
-    let public_base = std::env::var("PUBLIC_BASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "https://sync.example.com".into());
+    let public_base = public_base(req);
 
     let style_dark = match req.path.as_str() {
         "/style.json" => Some(false),

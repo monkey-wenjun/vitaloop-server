@@ -282,7 +282,7 @@ impl MapTiles {
             .agent
             .get(&self.upstream)
             .header("Range", &format!("bytes={offset}-{end}"))
-            .header("User-Agent", "Vitaloop-map/1.0 (+https://sync.example.com)")
+            .header("User-Agent", "Vitaloop-map/1.0")
             .call()
             .map_err(|e| format!("upstream range request failed: {e}"))?;
         let content_length = response
