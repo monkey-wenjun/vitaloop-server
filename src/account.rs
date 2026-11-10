@@ -1081,13 +1081,13 @@ mod tests {
 
     #[test]
     fn account_id_is_stable_and_email_is_case_insensitive() {
-        assert_eq!(account_id("Hi@example.com"), account_id("hi@example.com"));
+        assert_eq!(account_id("Hi@Example.com"), account_id("hi@example.com"));
         assert_ne!(account_id("a@example.com"), account_id("b@example.com"));
     }
 
     #[test]
     fn blog_token_maps_to_one_read_only_account() {
-        let id = "db4426d55c41268569f58f09";
+        let id = "0123456789abcdef01234567";
         assert_eq!(
             blog_account_match("long-random-blog-token", "long-random-blog-token", id).as_deref(),
             Some(id)
