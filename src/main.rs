@@ -99,7 +99,7 @@ fn main() {
 }
 
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/wenjun".into()))
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/var/lib/vitaloop-server".into()))
 }
 
 pub struct Request {

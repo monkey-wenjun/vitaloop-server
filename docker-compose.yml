@@ -1,0 +1,19 @@
+services:
+  vitaloop-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vitaloop-server:latest
+    container_name: vitaloop-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8793:8793"
+    volumes:
+      - vitaloop-data:/data
+    environment:
+      # 反向代理的对外地址；不设则按请求 Host 头推断。
+      # PUBLIC_BASE_URL: https://example.com
+      PMTILES_URL: https://build.protomaps.com/20261109.pmtiles
+
+volumes:
+  vitaloop-data:
