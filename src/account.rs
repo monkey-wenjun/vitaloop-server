@@ -43,6 +43,19 @@ struct WorkoutCacheEntry {
 static WORKOUT_CACHE: OnceLock<Mutex<HashMap<PathBuf, WorkoutCacheEntry>>> = OnceLock::new();
 static WORKOUT_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
+/// 按 (全量快照, 补丁日志) 文件戳缓存已合并的健康 JSON。heart_rate_points
+/// 这类秒级采样表有几十万行，每次 MCP 查询都重放整条补丁链会到几十秒；
+/// stamp 未命中即重算，正确性不依赖 App 的写路径。
+struct MergedHealthCacheEntry {
+    snapshot: FileStamp,
+    patches: FileStamp,
+    value: Arc<Json>,
+}
+
+static MERGED_HEALTH_CACHE: OnceLock<Mutex<HashMap<PathBuf, MergedHealthCacheEntry>>> =
+    OnceLock::new();
+static MERGED_HEALTH_LOAD_LOCK: Mutex<()> = Mutex::new(());
+
 /// 启动时预解析所有账号的运动表；首个公开请求不再承担几十兆 JSON 的冷解析。
 pub fn warm_workout_cache(root: &Path) {
     let Ok(entries) = fs::read_dir(accounts_dir(root)) else {
@@ -979,11 +992,45 @@ fn workout_rows(value: Json) -> Option<Vec<Json>> {
 /// 读取基线快照并依次套用增量补丁。补丁为空时直接返回基线，避免每次
 /// 拉运动索引都重新解析几十兆 JSON。
 pub(crate) fn merged_health(root: &Path, id: &str) -> Option<Json> {
+    let value = cached_merged_health(root, id)?;
+    Some((*value).clone())
+}
+
+/// 只合并指定表，避免公开博客接口为无关表反复复制整份健康快照。
+pub(crate) fn merged_health_tables(root: &Path, id: &str, names: &[&str]) -> Option<Json> {
+    let mut value = (*cached_merged_health(root, id)?).clone();
+    retain_tables(&mut value, names);
+    Some(value)
+}
+
+fn cached_merged_health(root: &Path, id: &str) -> Option<Arc<Json>> {
+    let snapshot = file_stamp(&data_path(root, id));
+    let patches = file_stamp(&patches_path(root, id));
+    let key = data_path(root, id);
+    let cache = MERGED_HEALTH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some(entry) = entries.get(&key) {
+            if entry.snapshot == snapshot && entry.patches == patches {
+                return Some(entry.value.clone());
+            }
+        }
+    }
+
+    // stamp 未命中时同一账号只解析一次，并发请求共享结果而不是各自重放补丁链。
+    let _load_guard = MERGED_HEALTH_LOAD_LOCK.lock().ok()?;
+    if let Ok(entries) = cache.lock() {
+        if let Some(entry) = entries.get(&key) {
+            if entry.snapshot == snapshot && entry.patches == patches {
+                return Some(entry.value.clone());
+            }
+        }
+    }
+
     let raw = fs::read(data_path(root, id)).ok()?;
-    let patches = fs::read(patches_path(root, id)).unwrap_or_default();
+    let patch_bytes = fs::read(patches_path(root, id)).unwrap_or_default();
     let decoded = decode_snapshot(raw)?;
     let mut value = json::parse(std::str::from_utf8(&decoded).ok()?).ok()?;
-    for line in patches.split(|b| *b == b'\n') {
+    for line in patch_bytes.split(|b| *b == b'\n') {
         if line.is_empty() {
             continue;
         }
@@ -995,30 +1042,16 @@ pub(crate) fn merged_health(root: &Path, id: &str) -> Option<Json> {
         };
         let _ = apply_delta(&mut value, &delta);
     }
-    Some(value)
-}
-
-/// 只合并指定表，避免公开博客接口为无关表反复复制整份健康快照。
-pub(crate) fn merged_health_tables(root: &Path, id: &str, names: &[&str]) -> Option<Json> {
-    let raw = fs::read(data_path(root, id)).ok()?;
-    let patches = fs::read(patches_path(root, id)).unwrap_or_default();
-    let decoded = decode_snapshot(raw)?;
-    let mut value = json::parse(std::str::from_utf8(&decoded).ok()?).ok()?;
-    retain_tables(&mut value, names);
-    for line in patches.split(|b| *b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(delta) = std::str::from_utf8(line)
-            .map_err(|_| ())
-            .and_then(|text| json::parse(text).map_err(|_| ()))
-        else {
-            continue;
-        };
-        let Some(delta) = select_tables(&delta, names) else {
-            continue;
-        };
-        let _ = apply_delta(&mut value, &delta);
+    let value = Arc::new(value);
+    if let Ok(mut entries) = cache.lock() {
+        entries.insert(
+            key,
+            MergedHealthCacheEntry {
+                snapshot,
+                patches,
+                value: value.clone(),
+            },
+        );
     }
     Some(value)
 }
@@ -1034,22 +1067,6 @@ fn retain_tables(snapshot: &mut Json, names: &[&str]) {
     if let Some(items) = tables.as_object_mut() {
         items.retain(|(name, _)| names.contains(&name.as_str()));
     }
-}
-
-fn select_tables(delta: &Json, names: &[&str]) -> Option<Json> {
-    let tables = delta.get("tables")?.as_object()?;
-    let selected: Vec<(String, Json)> = tables
-        .iter()
-        .filter(|(name, _)| names.contains(&name.as_str()))
-        .cloned()
-        .collect();
-    if selected.is_empty() {
-        return None;
-    }
-    Some(Json::Object(vec![(
-        "tables".into(),
-        Json::Object(selected),
-    )]))
 }
 
 #[cfg(test)]
@@ -1342,6 +1359,42 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].as_array().unwrap()[1].as_f64(), Some(200.0));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merged_health_cache_recomputes_when_patch_log_grows() {
+        let root = dir();
+        let id = "cache-account";
+        let account_dir = root.join("accounts").join(id);
+        fs::create_dir_all(&account_dir).unwrap();
+        fs::write(
+            account_dir.join("health.json"),
+            br#"{"tables":{"heart_rate_points":{"columns":["ts","bpm"],"key":["ts"],"rows":[[1,70]]}}}"#,
+        )
+        .unwrap();
+        fs::write(account_dir.join("health.patches.jsonl"), b"").unwrap();
+
+        let first = merged_health_tables(&root, id, &["heart_rate_points"]).expect("first merge");
+        let again = merged_health_tables(&root, id, &["heart_rate_points"]).expect("cached merge");
+        assert_eq!(first, again);
+
+        use std::io::Write;
+        let mut patches = fs::OpenOptions::new()
+            .append(true)
+            .open(account_dir.join("health.patches.jsonl"))
+            .unwrap();
+        writeln!(patches, "{{\"tables\":{{\"heart_rate_points\":{{\"key\":[\"ts\"],\"columns\":[\"ts\",\"bpm\"],\"rows\":[[2,99]]}}}}}}").unwrap();
+
+        let updated = merged_health_tables(&root, id, &["heart_rate_points"]).expect("re-merged");
+        let rows = updated
+            .get("tables")
+            .and_then(|value| value.get("heart_rate_points"))
+            .and_then(|value| value.get("rows"))
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].as_array().unwrap()[1].as_f64(), Some(99.0));
         let _ = fs::remove_dir_all(root);
     }
 }
