@@ -484,7 +484,6 @@ fn issue_session(root: &Path, id: &str) -> String {
 }
 
 fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
-    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let rows = load_sessions(root);
     save_sessions(
         root,
