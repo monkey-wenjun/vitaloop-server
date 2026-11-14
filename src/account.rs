@@ -470,7 +470,9 @@ fn save_sessions(root: &Path, rows: &[(String, String, i64)]) -> std::io::Result
 }
 
 fn issue_session(root: &Path, id: &str) -> String {
+    eprintln!("debug: issue lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    eprintln!("debug: issue lock got");
     let token = hex(&random_bytes(32));
     let exp = now() + SESSION_SECONDS;
     let mut rows = load_sessions(root);
@@ -484,7 +486,9 @@ fn issue_session(root: &Path, id: &str) -> String {
 }
 
 fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
+    eprintln!("debug: revoke lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    eprintln!("debug: revoke lock got");
     let rows = load_sessions(root);
     save_sessions(
         root,
@@ -496,7 +500,9 @@ fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
 }
 
 pub(crate) fn session_account(root: &Path, token: &str) -> Option<String> {
+    eprintln!("debug: session lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    eprintln!("debug: session lock got");
     let current = now();
     load_sessions(root)
         .into_iter()
@@ -630,26 +636,26 @@ fn session_reply(code: u16, id: &str, email: &str, token: &str) -> (u16, &'stati
 }
 
 fn reset_code(root: &Path, id: &str) -> Option<(String, i64)> {
-    let body = fs::read(reset_code_path(root, id)).ok()?;
+    let path = reset_code_path(root, id);
+    let body = fs::read(path).ok()?;
+    let value = json::parse(std::str::from_utf8(&body).ok()?).ok()?;
     Some((
-        json_string(&body, "code")?,
-        json_string(&body, "expires")?.parse().ok()?,
+        value.get("code")?.as_str()?.to_string(),
+        value.get("expires")?.as_f64()? as i64,
     ))
 }
 
 fn save_reset_code(root: &Path, id: &str, code: &str, expires: i64) -> std::io::Result<()> {
     let dir = reset_codes_dir(root);
     fs::create_dir_all(&dir)?;
-    eprintln!("debug: saving id={id} dir_exists={}", dir.exists());
-    let tmp = reset_codes_dir(root).join(format!("{id}.json.tmp"));
     let body = format!(
         "{{\"code\":\"{}\",\"expires\":{}}}",
         json_escape(code),
         expires
     );
-    fs::write(&tmp, body)?;
-    eprintln!("debug: tmp={:?} dest={:?} exists_before={}", tmp, reset_code_path(root, id), reset_code_path(root, id).exists());
-    fs::rename(&tmp, reset_code_path(root, id))
+    let path = reset_code_path(root, id);
+    fs::write(&path, body)?;
+    Ok(())
 }
 
 fn reset_begin(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
@@ -724,6 +730,7 @@ fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
     }
     let _ = fs::remove_file(reset_code_path(root, &id));
     revoke_sessions(root, &id).ok();
+    eprintln!("debug: after revoke path={:?}", reset_code_path(root, &id));
     drop(_guard);
     let token = issue_session(root, &id);
     session_reply(200, &id, &email, &token)
@@ -1352,10 +1359,12 @@ mod tests {
             headers: HashMap::new(),
             body: br#"{"email":"RESET@example.com"}"#.to_vec(),
         };
+        eprintln!("debug: before begin");
         assert_eq!(route(&begin, &root).unwrap().0, 200);
+        eprintln!("debug: after begin");
         let reset = fs::read(reset_code_path(&root, &account_id("reset@example.com"))).unwrap();
         let code = json_string(&reset, "code").unwrap();
-        println!("read code={code:?}, reset={}", String::from_utf8_lossy(&reset));
+        eprintln!("debug: read external");
 
         let wrong = Request {
             method: "POST".into(),
@@ -1377,7 +1386,7 @@ mod tests {
             .into_bytes(),
         };
         let (code_status, _, body) = route(&confirm, &root).unwrap();
-        println!("confirm status={code_status}, body={}", String::from_utf8_lossy(&body));
+        eprintln!("debug: after confirm status={code_status}");
         assert_eq!(code_status, 200);
         let new_token = json_string(&body, "token").unwrap();
 
