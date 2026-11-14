@@ -11,7 +11,6 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
@@ -328,16 +327,16 @@ impl EphemerisService {
 
         let mut rtcm = Vec::new();
         for entry in gps.values() {
-            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1019, SC, 0.0)?));
+            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1019, SC)?));
         }
         for entry in glo.values() {
             rtcm.extend_from_slice(&frame(&encode_glo(entry)?));
         }
         for entry in bds.values() {
-            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1042, SC, 0.0)?));
+            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1042, SC)?));
         }
         for entry in galileo.values() {
-            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1046, SC, 0.0)?));
+            rtcm.extend_from_slice(&frame(&encode_nav(entry, 1046, SC)?));
         }
         let generated_at = now_unix.floor() as u64;
         let zip = build_zip(&rtcm, generated_at);
@@ -462,7 +461,7 @@ fn unsigned(value: i64, width: u32) -> Result<u64, String> {
     Ok(value as u64)
 }
 
-fn encode_nav(entry: &NavEntry, message: u32, sc: f64, _unused: f64) -> Result<Vec<u8>, String> {
+fn encode_nav(entry: &NavEntry, message: u32, sc: f64) -> Result<Vec<u8>, String> {
     let mut w = BitWriter::new();
     let mut put = |value: u64, width: u32| -> Result<(), String> {
         w.put(value, width)
@@ -573,3 +572,449 @@ fn encode_nav(entry: &NavEntry, message: u32, sc: f64, _unused: f64) -> Result<V
     assert_eq!(w.size(), match entry.kind { NavKind::Gps => 488, NavKind::Bds => 512, NavKind::Galileo => 504 });
     Ok(w.payload())
 }
++
++fn encode_glo(entry: &GloEntry) -> Result<Vec<u8>, String> {
++    let mut w = BitWriter::new();
++    w.put(1020, 12)?;
++    w.put(entry.sv as u64, 6)?;
++    w.put(unsigned(entry.freq.round() as i64 + 7, 5)?, 5)?;
++    w.put(entry.health as u64 & 1, 1)?;
++    w.put(0, 1)?;
++    w.put(1, 2)?;
++    w.put(0, 12)?;
++    w.put(0, 1)?;
++    w.put(1, 1)?;
++    let tb = ((entry.epoch_minutes + 180) % 1440) / 15;
++    w.put(tb as u64, 7)?;
++    for (velocity, position, acceleration) in [
++        (&entry.vx, &entry.x, &entry.ax),
++        (&entry.vy, &entry.y, &entry.ay),
++        (&entry.vz, &entry.z, &entry.az),
++    ] {
++        w.put(sign_magnitude(*velocity, 2f64.powi(-20), 24)?, 24)?;
++        w.put(sign_magnitude(*position, 2f64.powi(-11), 27)?, 27)?;
++        w.put(sign_magnitude(*acceleration, 2f64.powi(-30), 5)?, 5)?;
++    }
++    w.put(1, 1)?;
+    w.put(sign_magnitude(entry.gamma, 2f64.powi(-40), 11)?, 11)?;
+    w.put(0, 3)?;
+    let tau = quantize(entry.clk, 2f64.powi(-36));
+    w.put(if tau >= 0 { 1 } else { 0 }, 1)?;
+    w.put(unsigned(tau.abs(), 27)?, 27)?;
+    w.put(0, 6)?;
+    w.put(glo_flags(entry.sv) as u64, 3)?;
+    w.put(GLO_TAIL_268, 87)?;
+    assert_eq!(w.size(), 360);
+    Ok(w.payload())
+}
+
+fn sign_magnitude(value: f64, scale: f64, width: u32) -> Result<u64, String> {
+    let quantized = quantize(value, scale);
+    let magnitude = quantized.abs();
+    if magnitude >= 1i64 << (width - 1) {
+        return Err(format!("GLONASS field overflow: {value}"));
+    }
+    Ok(if quantized < 0 {
+        (1u64 << (width - 1)) | magnitude as u64
+    } else {
+        magnitude as u64
+    })
+}
+
+fn now_unix() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+
+fn chrono_parts(unix: f64) -> (i64, u32, u32, u32, u32, u32) {
+    let seconds = unix.floor() as i64;
+    let days = seconds.div_euclid(86400);
+    let mut remaining = seconds.rem_euclid(86400);
+    let hour = (remaining / 3600) as u32;
+    remaining %= 3600;
+    let minute = (remaining / 60) as u32;
+    let second = (remaining % 60) as u32;
+
+    let mut year = 1970 + days.div_euclid(365);
+    while days >= civil_from_days(year + 1, 1, 1) {
+        year += 1;
+    }
+    let mut month = 1;
+    while month < 12 && days >= civil_from_days(year, month as i64 + 1, 1) {
+        month += 1;
+    }
+    let day = (days - civil_from_days(year, month as i64, 1) + 1) as u32;
+    (year, day_of_year(year, month, day), hour, minute, second, 0)
+}
+
+fn leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = if month <= 2 { month + 12 } else { month };
+    365 * y + y / 4 - y / 100 + y / 400 + (153 * m - 457) / 5 + day - 719_468
+}
+
+fn civil_from_days(year: i64, month: i64, day: i64) -> i64 {
+    days_from_civil(year, month, day)
+}
+
+fn day_of_year(year: i64, month: u32, day: u32) -> u32 {
+    let mut result = day;
+    for month_index in 1..month {
+        result += MONTH_DAYS[(month_index - 1) as usize];
+        if month_index == 2 && leap_year(year) {
+            result += 1;
+        }
+    }
+    result
+}
+
+fn parse_ftp_names(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let name = line.rsplit([' ', '/']).next()?.trim();
+            (!name.is_empty() && name.ends_with(".rnx.gz")).then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn gunzip(bytes: &[u8]) -> Option<String> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut text = String::new();
+    decoder.read_to_end(&mut text).ok()?;
+    Some(text)
+}
+
+fn merge_rinex_text(out: &mut String, text: &str) {
+    let mut header_lines = text.lines();
+    let mut version = String::new();
+    for line in header_lines.by_ref() {
+        if line.contains("RINEX VERSION / TYPE") {
+            version = line.to_string();
+        }
+        if line.contains("END OF HEADER") {
+            break;
+        }
+    }
+    if !out.contains("END OF HEADER") {
+        out.push_str(version.trim_end());
+        out.push('\n');
+        out.push_str("SP                       MERGED HOURLY NAV             \n");
+        for _ in 0..80 {
+            out.push_str("                                                        \n");
+        }
+        out.push_str("                                                        END OF HEADER\n");
+    }
+    out.push_str(header_lines.as_str());
+    out.push('\n');
+}
+
+fn parse_nav(text: &str) -> Vec<NavRecord> {
+    let mut records = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if line.len() < 23 {
+            index += 1;
+            continue;
+        }
+        let first = line.as_bytes()[0] as char;
+        if !matches!(first, 'G' | 'C' | 'E') || line[1..3].trim().parse::<u32>().is_err() {
+            index += 1;
+            continue;
+        }
+        let vals = parse_floats(&line[3..]);
+        if vals.len() < 8 {
+            index += 1;
+            continue;
+        }
+        let mut record = NavRecord {
+            system: first,
+            sv: line[1..3].trim().parse().unwrap(),
+            vals,
+        };
+        let mut continuation = index + 1;
+        while continuation < lines.len() && lines[continuation].starts_with("   ") {
+            record.vals.extend(parse_floats(lines[continuation]));
+            continuation += 1;
+            if record.vals.len() > 32 {
+                break;
+            }
+        }
+        records.push(record);
+        index = continuation;
+    }
+    records
+}
+
+fn parse_glo(text: &str) -> Vec<GloEntry> {
+    let mut records = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if line.len() < 23 || !line.starts_with('R') || line[1..3].trim().parse::<u32>().is_err() {
+            index += 1;
+            continue;
+        }
+        let tokens = parse_floats(&line[3..]);
+        if tokens.len() < 9 {
+            index += 1;
+            continue;
+        }
+        let sv = line[1..3].trim().parse().unwrap();
+        let epoch = &tokens[0..6];
+        let mut body = Vec::new();
+        let mut continuation = index + 1;
+        while continuation < lines.len() && lines[continuation].starts_with("   ") && body.len() < 12 {
+            body.extend(parse_floats(lines[continuation]));
+            continuation += 1;
+        }
+        index = continuation;
+        if body.len() < 12 {
+            continue;
+        }
+        let Some((year, month, day, hour, minute)) = epoch.iter().map(|v| *v as i64).next_tuple() else {
+            continue;
+        };
+        let seconds = days_from_civil(year, month, day) * 86400
+            + hour * 3600
+            + minute * 60
+            + epoch[5].round() as i64;
+        let entry = GloEntry {
+            sv,
+            freq: body[7],
+            clk: tokens[6],
+            gamma: tokens[7],
+            health: body[3].round() as u32,
+            x: body[0],
+            vx: body[1],
+            ax: body[2],
+            y: body[4],
+            vy: body[5],
+            ay: body[6],
+            z: body[8],
+            vz: body[9],
+            az: body[10],
+            abs_epoch: seconds as f64,
+            epoch_minutes: (hour * 60 + minute) as u32,
+        };
+        records.push(entry);
+    }
+    records
+}
+
+fn glo_entry(record: GloEntry) -> Option<GloEntry> {
+    let coordinates_ok = record.x.abs().max(record.y.abs()).max(record.z.abs()) < 60_000.0;
+    let velocity_ok = record.vx.abs().max(record.vy.abs()).max(record.vz.abs()) < 12.0;
+    if record.freq.abs() <= 7.0
+        && record.clk.abs() < 1e-2
+        && record.gamma.abs() < 1e-9
+        && coordinates_ok
+        && velocity_ok
+    {
+        Some(record)
+    } else {
+        None
+    }
+}
+
+fn parse_floats(line: &str) -> Vec<f64> {
+    let mut output = Vec::new();
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let start = index;
+        if bytes[index] == b'-' || bytes[index] == b'+' {
+            index += 1;
+        }
+        let mut digits = false;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+            digits = true;
+        }
+        if index < bytes.len() && bytes[index] == b'.' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+                digits = true;
+            }
+        }
+        if !digits {
+            index = start + 1;
+            continue;
+        }
+        if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E' || bytes[index] == b'd' || bytes[index] == b'D') {
+            let exponent_at = index;
+            index += 1;
+            if index < bytes.len() && (bytes[index] == b'-' || bytes[index] == b'+') {
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index].is_ascii_digit() {
+                while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    index += 1;
+                }
+            } else {
+                index = exponent_at;
+            }
+        }
+        if let Ok(value) = line[start..index].replace(['D', 'd'], "E").parse::<f64>() {
+            output.push(value);
+        }
+    }
+    output
+}
+
+fn nav_entry(record: NavRecord, current_week: u32) -> Option<NavEntry> {
+    let v = record.vals;
+    let (kind, week) = match record.system {
+        'G' if v.len() >= 27 => (NavKind::Gps, v[21].round() as u32),
+        'C' if v.len() >= 25 => (NavKind::Bds, v[20].round() as u32 + GPS_TO_BDS_WEEK),
+        'E' if v.len() >= 20 => {
+            let mut week = v[21].round() as u32;
+            if week < 2000 {
+                week += GPS_TO_GST_WEEK;
+            }
+            (NavKind::Galileo, week)
+        }
+        _ => return None,
+    };
+    Some(NavEntry {
+        sv: record.sv,
+        af0: v[0],
+        af1: v[1],
+        af2: v[2],
+        iode: v[3].round() as u32,
+        crs: v[4],
+        deltan: v[5],
+        m0: v[6],
+        cuc: v[7],
+        e: v[8],
+        cus: v[9],
+        sqrta: v[10],
+        toe: v[11],
+        cic: v[12],
+        omg0: v[13],
+        cis: v[14],
+        i0: v[15],
+        crc: v[16],
+        omg: v[17],
+        omgdot: v[18],
+        idot: v[19],
+        week,
+        kind,
+    })
+}
+
+fn abs_toe(entry: &NavEntry) -> f64 {
+    entry.week as f64 * 604800.0 + entry.toe
+}
+
+fn fresh_nav(entry: &NavEntry, now_gps: f64) -> bool {
+    let age_hours = (now_gps - abs_toe(entry)) / 3600.0;
+    age_hours >= -FUTURE_AGE_HOURS && age_hours <= MAX_AGE_HOURS
+}
+
+fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
+    let gz_header = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(rtcm).unwrap();
+    let compressed = gz.finish().unwrap();
+    let mut gz_data = gz_header;
+    gz_data.extend_from_slice(&compressed[10..compressed.len() - 8]);
+    gz_data.extend_from_slice(&crc32(rtcm).to_le_bytes());
+    gz_data.extend_from_slice(&(rtcm.len() as u32).to_le_bytes());
+
+    let config = format!(
+        "{{\n  \"higeo/v1/gnssinfo?type=0x0024/HW_AGNSS\": {{\n    \"files\": [\"HW_AGNSS\", \"HW_AGNSS_RTCM_33\"],\n    \"tag\": \"higeo/v1/gnssinfo?type=0x0024/HW_AGNSS\",\n    \"uuid\": \"agnss-{}\",\n    \"ver\": 3\n  }}\n}}\n",
+        chrono_parts(now_unix()).0
+    );
+    let files = [
+        ("time", generated_at.to_string().into_bytes()),
+        ("ephemeris_config.json", config.into_bytes()),
+        ("agnss/HW_AGNSS_RTCM_33", rtcm.to_vec()),
+        ("agnss/HW_AGNSS", gz_data),
+    ];
+    let mut out = Vec::new();
+    for (name, data) in files {
+        write_zip_entry(&mut out, name, &data, generated_at);
+    }
+    let size = out.len() as u32;
+    let crc = crc32(&out);
+    out.extend_from_slice(&0x06054b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&files.len() as u16.to_le_bytes());
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out
+}
+
+fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64) {
+    let crc = crc32(data);
+    let offset = out.len() as u32;
+    let mut parts = utc_parts(generated_at as f64);
+    if parts.year < 1980 {
+        parts = DateParts { year: 1980, month: 1, day: 1, hour: 0, minute: 0, second: 0 };
+    }
+    let dos_date = ((parts.year - 1980) << 9) | (parts.month << 5) | parts.day;
+    let dos_time = (parts.hour << 11) | (parts.minute << 5) | (parts.second / 2);
+    out.extend_from_slice(&0x04034b50u32.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(dos_time as u16).to_le_bytes());
+    out.extend_from_slice(&(dos_date as u16).to_le_bytes());
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(data);
+    out.extend_from_slice(&0x02014b50u32.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(dos_time as u16).to_le_bytes());
+    out.extend_from_slice(&(dos_date as u16).to_le_bytes());
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&offset.to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffffffffu32;
+    for byte in data {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xedb88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+mod ephemeris_tests;

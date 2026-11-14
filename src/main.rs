@@ -11,10 +11,12 @@
 mod account;
 mod blog_health;
 mod crypto;
+mod ephemeris;
 mod json;
 mod map_tiles;
 mod mcp;
 
+use ephemeris::EphemerisService;
 use map_tiles::MapTiles;
 use std::collections::HashMap;
 use std::fs;
@@ -35,6 +37,7 @@ fn body_too_large(len: usize) -> bool {
 struct State {
     data: PathBuf,
     map: MapTiles,
+    ephemeris: EphemerisService,
 }
 
 fn main() {
@@ -66,12 +69,18 @@ fn main() {
     let state = Arc::new(State {
         data,
         map: MapTiles::from_env(),
+        ephemeris: EphemerisService::from_env(),
     });
     eprintln!("地图瓦片上游：{}", state.map.upstream());
     let map_warm = Arc::clone(&state);
     thread::spawn(move || match map_warm.map.prewarm() {
         Ok(()) => eprintln!("地图目录已预热"),
         Err(error) => eprintln!("地图目录预热失败：{error}"),
+    });
+    let ephemeris_warm = Arc::clone(&state);
+    thread::spawn(move || match ephemeris_warm.ephemeris.prewarm() {
+        Ok(()) => eprintln!("星历已预热"),
+        Err(error) => eprintln!("星历预热失败：{error}"),
     });
     let warm_root = state.data.clone();
     thread::spawn(move || {
@@ -176,6 +185,15 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
 
     if let Some(result) = route_map(&mut stream, &req, &state.map) {
         return result;
+    }
+    if req.path == "/ephemeris/status" {
+        return respond(
+            &mut stream,
+            200,
+            "application/json",
+            state.ephemeris.status().as_bytes(),
+            None,
+        );
     }
 
     if req.path == "/mcp" || req.path.starts_with("/mcp?") {
@@ -469,23 +487,4 @@ fn respond_enc(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn request_body_limit_is_inclusive_and_large_bodies_are_rejected() {
-        assert!(!body_too_large(MAX_BODY));
-        assert!(body_too_large(MAX_BODY + 1));
-    }
-
-    #[test]
-    fn tile_paths_are_strict() {
-        assert_eq!(
-            parse_tile_path("/tiles/14/13660/6745.mvt"),
-            Some(Some((14, 13660, 6745)))
-        );
-        assert_eq!(parse_tile_path("/tiles/14/-1/6745.mvt"), Some(None));
-        assert_eq!(parse_tile_path("/tiles/14/13660/6745"), None);
-        assert_eq!(parse_tile_path("/not-tiles/14/13660/6745.mvt"), None);
-    }
-}
+mod http_tests;
