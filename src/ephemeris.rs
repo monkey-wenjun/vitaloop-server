@@ -572,30 +572,30 @@ fn encode_nav(entry: &NavEntry, message: u32, sc: f64) -> Result<Vec<u8>, String
     assert_eq!(w.size(), match entry.kind { NavKind::Gps => 488, NavKind::Bds => 512, NavKind::Galileo => 504 });
     Ok(w.payload())
 }
-+
-+fn encode_glo(entry: &GloEntry) -> Result<Vec<u8>, String> {
-+    let mut w = BitWriter::new();
-+    w.put(1020, 12)?;
-+    w.put(entry.sv as u64, 6)?;
-+    w.put(unsigned(entry.freq.round() as i64 + 7, 5)?, 5)?;
-+    w.put(entry.health as u64 & 1, 1)?;
-+    w.put(0, 1)?;
-+    w.put(1, 2)?;
-+    w.put(0, 12)?;
-+    w.put(0, 1)?;
-+    w.put(1, 1)?;
-+    let tb = ((entry.epoch_minutes + 180) % 1440) / 15;
-+    w.put(tb as u64, 7)?;
-+    for (velocity, position, acceleration) in [
-+        (&entry.vx, &entry.x, &entry.ax),
-+        (&entry.vy, &entry.y, &entry.ay),
-+        (&entry.vz, &entry.z, &entry.az),
-+    ] {
-+        w.put(sign_magnitude(*velocity, 2f64.powi(-20), 24)?, 24)?;
-+        w.put(sign_magnitude(*position, 2f64.powi(-11), 27)?, 27)?;
-+        w.put(sign_magnitude(*acceleration, 2f64.powi(-30), 5)?, 5)?;
-+    }
-+    w.put(1, 1)?;
+
+fn encode_glo(entry: &GloEntry) -> Result<Vec<u8>, String> {
+    let mut w = BitWriter::new();
+    w.put(1020, 12)?;
+    w.put(entry.sv as u64, 6)?;
+    w.put(unsigned(entry.freq.round() as i64 + 7, 5)?, 5)?;
+    w.put(entry.health as u64 & 1, 1)?;
+    w.put(0, 1)?;
+    w.put(1, 2)?;
+    w.put(0, 12)?;
+    w.put(0, 1)?;
+    w.put(1, 1)?;
+    let tb = ((entry.epoch_minutes + 180) % 1440) / 15;
+    w.put(tb as u64, 7)?;
+    for (velocity, position, acceleration) in [
+        (&entry.vx, &entry.x, &entry.ax),
+        (&entry.vy, &entry.y, &entry.ay),
+        (&entry.vz, &entry.z, &entry.az),
+    ] {
+        w.put(sign_magnitude(*velocity, 2f64.powi(-20), 24)?, 24)?;
+        w.put(sign_magnitude(*position, 2f64.powi(-11), 27)?, 27)?;
+        w.put(sign_magnitude(*acceleration, 2f64.powi(-30), 5)?, 5)?;
+    }
+    w.put(1, 1)?;
     w.put(sign_magnitude(entry.gamma, 2f64.powi(-40), 11)?, 11)?;
     w.put(0, 3)?;
     let tau = quantize(entry.clk, 2f64.powi(-36));

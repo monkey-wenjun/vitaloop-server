@@ -186,7 +186,30 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
     if let Some(result) = route_map(&mut stream, &req, &state.map) {
         return result;
     }
-    if req.path == "/ephemeris/status" {
+    if req.path == "/ephemeris.zip" {
+        return match state.ephemeris.zip() {
+            Ok(body) => respond_map(
+                &mut stream,
+                200,
+                "application/zip",
+                &body,
+                "no-cache",
+                req.method == "HEAD",
+            ),
+            Err(error) => {
+                eprintln!("星历包不可用：{error}");
+                respond_map(
+                    &mut stream,
+                    503,
+                    "text/plain",
+                    b"ephemeris not ready",
+                    "no-cache",
+                    req.method == "HEAD",
+                )
+            }
+        };
+    }
+    if req.path.starts_with("/ephemeris") {
         return respond(
             &mut stream,
             200,
