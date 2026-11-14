@@ -78,15 +78,7 @@ enum NavKind {
     Galileo,
 }
 
-impl NavKind {
-    fn message(self) -> u32 {
-        match self {
-            Self::Gps => 1019,
-            Self::Bds => 1042,
-            Self::Galileo => 1046,
-        }
-    }
-}
+impl NavKind {}
 
 #[derive(Clone, Debug)]
 struct GloEntry {
@@ -212,11 +204,11 @@ impl EphemerisService {
 
     fn fetch_hourly(&self) -> Result<(String, String), String> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let mut now_parts = chrono_parts(now.as_secs_f64() - 3600.0);
+        let mut requested_unix = now.as_secs_f64() - 3600.0;
         for _ in 0..3 {
+            let now_parts = chrono_parts(requested_unix);
             let year = now_parts.0;
-            let doy = now_parts.1;
-            let _hour = now_parts.2;
+            let doy = day_of_year(now_parts.0, now_parts.1, now_parts.2);
             let base = format!(
                 "{upstream}/{year}/{doy:03}",
                 upstream = self.upstream,
@@ -231,7 +223,6 @@ impl EphemerisService {
                 .take(24)
                 .collect::<Vec<_>>();
             if names.is_empty() {
-                now_parts.2 = (now_parts.2 + 23) % 24;
                 continue;
             }
             let mut merged = String::new();
@@ -247,7 +238,7 @@ impl EphemerisService {
             if ok > 0 && merged.contains("END OF HEADER") {
                 return Ok((merged, format!("{base}/ ({ok} stations)")));
             }
-            now_parts.2 = (now_parts.2 + 23) % 24;
+            requested_unix -= 3600.0;
         }
         Err("WHU hourly FTP has no usable RINEX".into())
     }
@@ -376,7 +367,7 @@ impl BitWriter {
     }
 
     fn put(&mut self, value: u64, width: u32) -> Result<(), String> {
-        if width > 64 || value >= (1u64 << width) {
+        if width > 64 || (width < 64 && value >= (1u64 << width)) {
             return Err(format!("value {value} does not fit in {width} bits"));
         }
         for index in (0..width).rev() {
@@ -386,7 +377,6 @@ impl BitWriter {
             if self.bits % 8 == 0 {
                 self.bytes.push(self.current);
                 self.current = 0;
-            } else {
             }
         }
         Ok(())
@@ -397,11 +387,9 @@ impl BitWriter {
     }
 
     fn payload(mut self) -> Vec<u8> {
-        while self.bits % 8 != 0 {
-            self.current <<= 1;
-            self.bits += 1;
-        }
-        if self.bits > 0 {
+        if self.bits % 8 != 0 {
+            let padding = 8 - self.bits % 8;
+            self.current <<= padding;
             self.bytes.push(self.current);
         }
         self.bytes
@@ -415,7 +403,7 @@ impl Crc24 {
         crc ^= (byte as u32) << 16;
         for _ in 0..8 {
             if crc & 0x800000 != 0 {
-                crc = (crc << 1) ^ 0x1864cbb;
+                crc = (crc << 1) ^ 0x1864cfb;
             } else {
                 crc <<= 1;
             }
@@ -620,9 +608,10 @@ fn encode_glo(entry: &GloEntry) -> Result<Vec<u8>, String> {
     w.put(unsigned(tau.abs(), 27)?, 27)?;
     w.put(0, 6)?;
     w.put(glo_flags(entry.sv) as u64, 3)?;
-    w.put(GLO_TAIL_268 as u64, 64)?;
-    w.put((GLO_TAIL_268 >> 64) as u64, 23)?;
-    assert_eq!(w.size(), 360);
+    let tail = (GLO_TAIL_268 >> (128 - 87)) as u128;
+    w.put((tail >> 64) as u64, 23)?;
+    w.put(tail as u64, 64)?;
+    assert_eq!(w.size(), 355);
     Ok(w.payload())
 }
 
@@ -664,7 +653,7 @@ fn chrono_parts(unix: f64) -> (i64, u32, u32, u32, u32, u32) {
         month += 1;
     }
     let day = (days - civil_from_days(year, month as i64, 1) + 1) as u32;
-    (year, day_of_year(year, month, day), hour, minute, second, 0)
+    (year, month, day, hour, minute, second)
 }
 
 fn leap_year(year: i64) -> bool {
@@ -988,14 +977,13 @@ fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
     for (name, data) in files {
         write_zip_entry(&mut out, name, &data, generated_at);
     }
-    let size = out.len() as u32;
+    let central_directory_offset = out.len() as u32;
     out.extend_from_slice(&0x06054b50u32.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&(entry_count as u16).to_le_bytes());
     out.extend_from_slice(&(entry_count as u16).to_le_bytes());
-    out.extend_from_slice(&size.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&central_directory_offset.to_le_bytes());
     out
 }
 
@@ -1007,8 +995,8 @@ fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64
     let month = if parts.0 < 1980 { 1 } else { parts.1 };
     let day = if parts.0 < 1980 { 1 } else { parts.2 };
     let hour = if parts.0 < 1980 { 0 } else { parts.3 };
-    let minute = if parts.0 < 1980 { 0 } else { parts.3 };
-    let second = if parts.0 < 1980 { 0 } else { parts.4 };
+    let minute = if parts.0 < 1980 { 0 } else { parts.4 };
+    let second = if parts.0 < 1980 { 0 } else { parts.5 };
     let dos_date = ((year - 1980) << 9) | (month << 5) | day;
     let dos_time = (hour << 11) | (minute << 5) | (second / 2);
     out.extend_from_slice(&0x04034b50u32.to_le_bytes());

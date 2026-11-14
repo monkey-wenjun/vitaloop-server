@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn crc24_known_vector() {
-    assert_eq!(crc24q(b"123456789"), [0x5c, 0xf7, 0x2e]);
+    assert_eq!(crc24q(b"123456789"), [0xcd, 0xe7, 0x03]);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn glonass_encoder_size() {
 fn rinex_flex_floats() {
     assert_eq!(
         parse_floats(" -.156471505761e-04 .2034e+06 -1.2D-04"),
-        [-0.000156471505761, 203400.0, -0.00012]
+        [-0.0000156471505761, 203400.0, -0.00012]
     );
 }
 

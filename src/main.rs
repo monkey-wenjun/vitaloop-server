@@ -380,6 +380,7 @@ fn respond_map(
         404 => "Not Found",
         405 => "Method Not Allowed",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     let head = format!(

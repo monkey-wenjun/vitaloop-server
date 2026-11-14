@@ -12,6 +12,7 @@
 - **MCP**：`POST /mcp`，Streamable HTTP + JSON-RPC 2.0，14 个只读工具，复用账号 Bearer 会话。
 - **地图**：`/style.json`、`/style-dark.json`、`/tiles/{z}/{x}/{y}.mvt`，上游 Protomaps PMTiles，带本地缓存。
 - **博客数据**：`/blog/daily-fitness`，按 token 只读暴露一个账号的每日指标。
+- **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包；不使用华为 CDN/seed 接口。
 
 ## 构建
 
@@ -51,6 +52,8 @@ docker run -d --name vitaloop-server -p 127.0.0.1:8793:8793 \
 | `VITALOOP_BLOG_TOKEN` | `/blog/daily-fitness` 的访问 token，不设则路由关闭 |
 | `VITALOOP_BLOG_ACCOUNT_ID` | 博客路由暴露的账号 id |
 | `BLOG_HEALTH_ACCOUNT_ID` | 直接指定博客账号，优先级高于上者 |
+| `EPHEMERIS_UPSTREAM` | RINEX 小时文件站点根目录，用于自算星历 |
+| `EPHEMERIS_RINEX` | 本地 RINEX 文件路径；设置后跳过上游下载 |
 
 数据布局：
 
