@@ -12,7 +12,7 @@
 - **MCP**：`POST /mcp`，Streamable HTTP + JSON-RPC 2.0，14 个只读工具，复用账号 Bearer 会话。
 - **地图**：`/style.json`、`/style-dark.json`、`/tiles/{z}/{x}/{y}.mvt`，上游 Protomaps PMTiles，带本地缓存。
 - **博客数据**：`/blog/daily-fitness`，按 token 只读暴露一个账号的每日指标。
-- **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包；不使用华为 CDN/seed 接口。
+- **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包。
 
 ## 构建
 
