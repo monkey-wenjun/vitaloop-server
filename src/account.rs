@@ -25,6 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PASSWORD_ROUNDS: usize = 60_000;
 const SESSION_SECONDS: i64 = 30 * 24 * 3600;
+const RESET_SECONDS: i64 = 15 * 60;
 
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -316,6 +317,14 @@ fn sessions_path(root: &Path) -> PathBuf {
     accounts_dir(root).join("sessions")
 }
 
+fn reset_codes_dir(root: &Path) -> PathBuf {
+    accounts_dir(root).join("reset-codes")
+}
+
+fn reset_code_path(root: &Path, id: &str) -> PathBuf {
+    reset_codes_dir(root).join(format!("{id}.json"))
+}
+
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -474,6 +483,18 @@ fn issue_session(root: &Path, id: &str) -> String {
     token
 }
 
+fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let rows = load_sessions(root);
+    save_sessions(
+        root,
+        &rows
+            .into_iter()
+            .filter(|(_, account, _)| account != id)
+            .collect::<Vec<_>>(),
+    )
+}
+
 pub(crate) fn session_account(root: &Path, token: &str) -> Option<String> {
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let current = now();
@@ -596,6 +617,112 @@ fn login(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
     )
 }
 
+fn session_reply(code: u16, id: &str, email: &str, token: &str) -> (u16, &'static str, Vec<u8>) {
+    json_reply(
+        code,
+        format!(
+            "{{\"ok\":true,\"account_id\":\"{}\",\"email\":\"{}\",\"token\":\"{}\"}}",
+            json_escape(id),
+            json_escape(email),
+            token
+        ),
+    )
+}
+
+fn reset_code(root: &Path, id: &str) -> Option<(String, i64)> {
+    let body = fs::read(reset_code_path(root, id)).ok()?;
+    Some((
+        json_string(&body, "code")?,
+        json_string(&body, "expires")?.parse().ok()?,
+    ))
+}
+
+fn save_reset_code(root: &Path, id: &str, code: &str, expires: i64) -> std::io::Result<()> {
+    let dir = reset_codes_dir(root);
+    fs::create_dir_all(&dir)?;
+    let tmp = reset_code_path(root, id).with_extension("json.tmp");
+    let body = format!(
+        "{{\"code\":\"{}\",\"expires\":{}}}",
+        json_escape(code),
+        expires
+    );
+    fs::write(&tmp, body)?;
+    fs::rename(&tmp, reset_code_path(root, id))
+}
+
+fn reset_begin(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
+    let Some(email) = json_string(body, "email").map(|v| v.trim().to_ascii_lowercase()) else {
+        return (400, "text/plain", b"missing email".to_vec());
+    };
+    if !valid_email(&email) {
+        return (400, "text/plain", b"invalid email".to_vec());
+    }
+    let id = account_id(&email);
+    if read_account(root, &id).is_some() {
+        let bytes = random_bytes(8);
+        let code: String = bytes
+            .iter()
+            .map(|byte| char::from(b'0' + (byte % 10)))
+            .collect();
+        let expires = now() + RESET_SECONDS;
+        if let Err(e) = save_reset_code(root, &id, &code, expires) {
+            return (
+                500,
+                "text/plain",
+                format!("write reset code: {e}").into_bytes(),
+            );
+        }
+    }
+    // 不返回账号是否存在，避免接口变成邮箱枚举器。
+    json_reply(200, "{\"ok\":true}".to_string())
+}
+
+fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
+    let Some(email) = json_string(body, "email").map(|v| v.trim().to_ascii_lowercase()) else {
+        return (400, "text/plain", b"missing email".to_vec());
+    };
+    let Some(code) = json_string(body, "code") else {
+        return (400, "text/plain", b"missing code".to_vec());
+    };
+    let Some(password) = json_string(body, "new_password") else {
+        return (400, "text/plain", b"missing new_password".to_vec());
+    };
+    if !valid_email(&email) {
+        return (400, "text/plain", b"invalid email".to_vec());
+    }
+    if password.chars().count() < 8 {
+        return (400, "text/plain", b"password too short".to_vec());
+    }
+    let id = account_id(&email);
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((stored_code, expires)) = reset_code(root, &id) else {
+        return (401, "text/plain", b"bad reset code".to_vec());
+    };
+    if now() >= expires || !eq_ct(stored_code.as_bytes(), code.as_bytes()) {
+        return (401, "text/plain", b"bad reset code".to_vec());
+    }
+    let Some((stored_email, _, _)) = read_account(root, &id) else {
+        return (401, "text/plain", b"bad reset code".to_vec());
+    };
+    if !eq_ct(stored_email.as_bytes(), email.as_bytes()) {
+        return (401, "text/plain", b"bad reset code".to_vec());
+    }
+    let salt = random_bytes(16);
+    let hash = derive(&password, &salt);
+    if let Err(e) = write_account(root, &id, &email, &salt, &hash) {
+        return (
+            500,
+            "text/plain",
+            format!("write account: {e}").into_bytes(),
+        );
+    }
+    let _ = fs::remove_file(reset_code_path(root, &id));
+    revoke_sessions(root, &id).ok();
+    drop(_guard);
+    let token = issue_session(root, &id);
+    session_reply(200, &id, &email, &token)
+}
+
 pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)> {
     let (path, query) = req
         .path
@@ -605,6 +732,8 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
         ("GET", "/v1/app/config") | ("GET", "/api/v1/app/config") => Some(app_config(root)),
         ("POST", "/v1/account/register") => Some(register(root, &req.body)),
         ("POST", "/v1/account/login") => Some(login(root, &req.body)),
+        ("POST", "/v1/account/reset/begin") => Some(reset_begin(root, &req.body)),
+        ("POST", "/v1/account/reset/confirm") => Some(reset_confirm(root, &req.body)),
         ("GET", "/v1/account/me") => {
             let Some(token) = bearer(req) else {
                 return Some((401, "text/plain", b"missing bearer".to_vec()));
@@ -1196,6 +1325,71 @@ mod tests {
         };
         assert_eq!(route(&me, &root).unwrap().0, 200);
         assert!(!token.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn password_reset_replaces_credentials_and_revokes_sessions() {
+        let root = dir();
+        let register = Request {
+            method: "POST".into(),
+            path: "/v1/account/register".into(),
+            headers: HashMap::new(),
+            body: br#"{"email":"reset@example.com","password":"test-password-123"}"#.to_vec(),
+        };
+        let (_, _, body) = route(&register, &root).unwrap();
+        let old_token = json_string(&body, "token").unwrap();
+
+        let begin = Request {
+            method: "POST".into(),
+            path: "/v1/account/reset/begin".into(),
+            headers: HashMap::new(),
+            body: br#"{"email":"RESET@example.com"}"#.to_vec(),
+        };
+        assert_eq!(route(&begin, &root).unwrap().0, 200);
+        let reset = fs::read(reset_code_path(&root, &account_id("reset@example.com"))).unwrap();
+        let code = json_string(&reset, "code").unwrap();
+
+        let wrong = Request {
+            method: "POST".into(),
+            path: "/v1/account/reset/confirm".into(),
+            headers: HashMap::new(),
+            body:
+                br#"{"email":"reset@example.com","code":"00000000","new_password":"another one"}"#
+                    .to_vec(),
+        };
+        assert_eq!(route(&wrong, &root).unwrap().0, 401);
+
+        let confirm = Request {
+            method: "POST".into(),
+            path: "/v1/account/reset/confirm".into(),
+            headers: HashMap::new(),
+            body: format!(
+                r#"{{"email":"reset@example.com","code":"{code}","new_password":"another one"}}"#
+            )
+            .into_bytes(),
+        };
+        let (code_status, _, body) = route(&confirm, &root).unwrap();
+        assert_eq!(code_status, 200);
+        let new_token = json_string(&body, "token").unwrap();
+
+        let old_me = Request {
+            method: "GET".into(),
+            path: "/v1/account/me".into(),
+            headers: HashMap::from([("authorization".into(), format!("Bearer {old_token}"))]),
+            body: Vec::new(),
+        };
+        assert_eq!(route(&old_me, &root).unwrap().0, 401);
+
+        let login = Request {
+            method: "POST".into(),
+            path: "/v1/account/login".into(),
+            headers: HashMap::new(),
+            body: br#"{"email":"reset@example.com","password":"another one"}"#.to_vec(),
+        };
+        assert_eq!(route(&login, &root).unwrap().0, 200);
+        assert!(!new_token.is_empty());
+        assert!(!reset_code_path(&root, &account_id("reset@example.com")).exists());
         let _ = fs::remove_dir_all(root);
     }
 
