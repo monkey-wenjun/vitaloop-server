@@ -4,12 +4,13 @@
 //! 本服务的 RINEX 输入生成 `HW_AGNSS` 与 `HW_AGNSS_RTCM_33`。
 
 use crate::json::Json;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
@@ -22,7 +23,9 @@ const SC: f64 = std::f64::consts::PI;
 const GLO_TAIL_268: u128 = 4_574_863_823_695_067_351_556_697_985_976_250_688;
 const MAX_AGE_HOURS: f64 = 6.0;
 const FUTURE_AGE_HOURS: f64 = 2.0;
-const GLO_FLAGS_265: [u8; 22] = [2, 2, 3, 4, 3, 0, 1, 2, 4, 5, 4, 1, 4, 2, 1, 4, 3, 2, 6, 3, 3, 5];
+const GLO_FLAGS_265: [u8; 22] = [
+    2, 2, 3, 4, 3, 0, 1, 2, 4, 5, 4, 1, 4, 2, 1, 4, 3, 2, 6, 3, 3, 5,
+];
 
 const fn glo_flags(sv: u32) -> u8 {
     if sv >= 1 && sv <= 22 {
@@ -152,32 +155,28 @@ impl EphemerisService {
 
     pub fn prewarm(&self) -> Result<(), String> {
         let current = self.refresh()?;
-        self.cache
-            .lock()
-            .unwrap()
-            .get_or_insert(current);
+        self.cache.lock().unwrap().get_or_insert(current);
         self.ready.notify_all();
         Ok(())
     }
 
     pub fn status(&self) -> String {
         let guard = self.cache.lock().unwrap();
-        let (guard, value) = match guard.as_ref() {
-            Some(value) => (guard, value),
-            None => return r#"{"ready":false,"source":null}"#.to_string(),
+        let Some(value) = guard.as_ref() else {
+            return r#"{"ready":false,"source":null}"#.to_string();
         };
         let object = Json::Object(vec![
             ("ready".into(), Json::Bool(true)),
             ("source".into(), Json::String(value.source.clone())),
-            ("generated_at".into(), Json::Number(value.generated_at as f64)),
+            (
+                "generated_at".into(),
+                Json::Number(value.generated_at as f64),
+            ),
             ("gps".into(), Json::Number(value.gps as f64)),
             ("glonass".into(), Json::Number(value.glo as f64)),
             ("bds".into(), Json::Number(value.bds as f64)),
             ("galileo".into(), Json::Number(value.galileo as f64)),
-            (
-                "rtcm_bytes".into(),
-                Json::Number(value.rtcm.len() as f64),
-            ),
+            ("rtcm_bytes".into(), Json::Number(value.rtcm.len() as f64)),
             ("zip_bytes".into(), Json::Number(value.zip.len() as f64)),
         ]);
         object.render()
@@ -185,32 +184,26 @@ impl EphemerisService {
 
     pub fn zip(&self) -> Result<Vec<u8>, String> {
         let guard = self.cache.lock().unwrap();
-        let (mut guard, value) = match guard.as_ref() {
-            Some(value) => (guard, value.clone()),
-            None => (self.ready.wait(guard, Duration::from_secs(20)).unwrap(), None),
-        };
-        while value.is_none() {
-            match guard.as_ref() {
-                Some(current) => return Ok(current.zip.clone()),
-                None => {
-                    let (next_guard, next) = self
-                        .ready
-                        .wait_timeout(guard, Duration::from_secs(20))
-                        .unwrap();
-                    guard = next_guard;
-                    if next.is_none() {
-                        return Err("ephemeris still refreshing".into());
-                    }
-                }
+        let mut guard = guard;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(current) = guard.as_ref() {
+                return Ok(current.zip.clone());
             }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("ephemeris still refreshing".into());
+            }
+            let (next_guard, _) = self.ready.wait_timeout(guard, remaining).unwrap();
+            guard = next_guard;
         }
-        Ok(value.unwrap().zip)
     }
 
     fn refresh(&self) -> Result<Ephemeris, String> {
         let started = Instant::now();
         if let Some(path) = self.local.lock().unwrap().clone() {
-            let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
             return self.make(&text, format!("file:{}", path.display()), started);
         }
         let (rinex, source) = self.fetch_hourly()?;
@@ -223,9 +216,15 @@ impl EphemerisService {
         for _ in 0..3 {
             let year = now_parts.0;
             let doy = now_parts.1;
-            let hour = now_parts.2;
-            let base = format!("{upstream}/{year}/{doy:03}", upstream = self.upstream, year = year, doy = doy);
-            let listing = self.get(format!("{base}/"))?;
+            let _hour = now_parts.2;
+            let base = format!(
+                "{upstream}/{year}/{doy:03}",
+                upstream = self.upstream,
+                year = year,
+                doy = doy
+            );
+            let listing_bytes = self.get(format!("{base}/"))?;
+            let listing = String::from_utf8_lossy(&listing_bytes);
             let names = parse_ftp_names(&listing)
                 .into_iter()
                 .filter(|name| name.ends_with("_MN.rnx.gz"))
@@ -254,7 +253,7 @@ impl EphemerisService {
     }
 
     fn get(&self, url: String) -> Result<Vec<u8>, String> {
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .call()
@@ -298,7 +297,7 @@ impl EphemerisService {
             }
         }
 
-        let mut glo = BTreeMap::new();
+        let mut glo: BTreeMap<u32, GloEntry> = BTreeMap::new();
         for record in glo_records {
             let Some(entry) = glo_entry(record) else {
                 continue;
@@ -363,7 +362,7 @@ impl EphemerisService {
 
 struct BitWriter {
     bytes: Vec<u8>,
-    bit: u32,
+    current: u8,
     bits: usize,
 }
 
@@ -371,7 +370,7 @@ impl BitWriter {
     fn new() -> Self {
         Self {
             bytes: Vec::new(),
-            bit: 0,
+            current: 0,
             bits: 0,
         }
     }
@@ -382,13 +381,12 @@ impl BitWriter {
         }
         for index in (0..width).rev() {
             let next_bit = (value >> index) & 1;
-            self.bytes.push((self.bytes.pop().unwrap_or(0) << 1) | next_bit as u8);
-            self.bit += 1;
             self.bits += 1;
-            if self.bit == 8 {
-                self.bit = 0;
+            self.current = (self.current << 1) | next_bit as u8;
+            if self.bits % 8 == 0 {
+                self.bytes.push(self.current);
+                self.current = 0;
             } else {
-                self.bytes.push(0);
             }
         }
         Ok(())
@@ -399,10 +397,12 @@ impl BitWriter {
     }
 
     fn payload(mut self) -> Vec<u8> {
-        while self.bit != 0 {
-            let byte = self.bytes.pop().unwrap_or(0) << 1;
-            self.bytes.push(byte);
-            self.bit += 1;
+        while self.bits % 8 != 0 {
+            self.current <<= 1;
+            self.bits += 1;
+        }
+        if self.bits > 0 {
+            self.bytes.push(self.current);
         }
         self.bytes
     }
@@ -415,7 +415,7 @@ impl Crc24 {
         crc ^= (byte as u32) << 16;
         for _ in 0..8 {
             if crc & 0x800000 != 0 {
-                crc = (crc << 1) ^ 0x1864cfb;
+                crc = (crc << 1) ^ 0x1864cbb;
             } else {
                 crc <<= 1;
             }
@@ -433,7 +433,11 @@ fn crc24q(data: &[u8]) -> [u8; 3] {
 }
 
 fn frame(payload: &[u8]) -> Vec<u8> {
-    let mut raw = vec![0xd3, ((payload.len() >> 8) & 0x03) as u8, payload.len() as u8];
+    let mut raw = vec![
+        0xd3,
+        ((payload.len() >> 8) & 0x03) as u8,
+        payload.len() as u8,
+    ];
     raw.extend_from_slice(payload);
     let crc = crc24q(&raw);
     raw.extend_from_slice(&crc);
@@ -463,113 +467,126 @@ fn unsigned(value: i64, width: u32) -> Result<u64, String> {
 
 fn encode_nav(entry: &NavEntry, message: u32, sc: f64) -> Result<Vec<u8>, String> {
     let mut w = BitWriter::new();
-    let mut put = |value: u64, width: u32| -> Result<(), String> {
-        w.put(value, width)
-    };
-    let mut q_signed = |value: f64, scale: f64, width: u32| -> Result<(), String> {
-        put(signed(quantize(value, scale), width)?, width)
-    };
-    let mut q_unsigned = |value: f64, scale: f64, width: u32| -> Result<(), String> {
-        put(unsigned(quantize(value, scale), width)?, width)
-    };
-    put(message, 12)?;
-    put(entry.sv as u64, 6)?;
+    macro_rules! put {
+        ($value:expr, $width:expr) => {
+            w.put($value as u64, $width)
+        };
+    }
+    macro_rules! q_signed {
+        ($value:expr, $scale:expr, $width:expr) => {
+            put!(signed(quantize($value, $scale), $width)?, $width)
+        };
+    }
+    macro_rules! q_unsigned {
+        ($value:expr, $scale:expr, $width:expr) => {
+            put!(unsigned(quantize($value, $scale), $width)?, $width)
+        };
+    }
+    put!(message, 12)?;
+    put!(entry.sv, 6)?;
     match entry.kind {
         NavKind::Gps => {
-            put(entry.week as u64 % 1024, 10)?;
-            put(entry.iode as u64, 8)?;
-            put(entry.iode as u64, 10)?;
+            put!(entry.week as u64 % 1024, 10)?;
+            put!(entry.iode as u64, 8)?;
+            put!(entry.iode as u64, 10)?;
         }
         NavKind::Bds => {
-            put(entry.week as u64 % 8192, 13)?;
-            put(entry.iode as u64, 5)?;
-            put(entry.iode as u64, 5)?;
+            put!(entry.week as u64 % 8192, 13)?;
+            put!(entry.iode as u64, 5)?;
+            put!(entry.iode as u64, 5)?;
         }
         NavKind::Galileo => {
-            put(entry.week as u64 % 4096, 12)?;
-            put(entry.iode as u64, 10)?;
+            put!(entry.week as u64 % 4096, 12)?;
+            put!(entry.iode as u64, 10)?;
         }
     }
     match entry.kind {
         NavKind::Gps => {
-            put(0, 4)?;
-            put(0, 2)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            q_unsigned(entry.toe, 16.0, 16)?;
-            q_signed(entry.af2, 2f64.powi(-55), 8)?;
-            q_signed(entry.af1, 2f64.powi(-43), 16)?;
-            q_signed(entry.af0, 2f64.powi(-31), 22)?;
-            q_signed(entry.crs, 2f64.powi(-5), 16)?;
-            q_signed(entry.deltan, sc * 2f64.powi(-43), 16)?;
-            q_signed(entry.m0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cuc, 2f64.powi(-29), 16)?;
-            q_unsigned(entry.e, 2f64.powi(-33), 32)?;
-            q_signed(entry.cus, 2f64.powi(-29), 16)?;
-            q_unsigned(entry.sqrta, 2f64.powi(-19), 32)?;
-            q_unsigned(entry.toe, 16.0, 16)?;
-            q_signed(entry.cic, 2f64.powi(-29), 16)?;
-            q_signed(entry.omg0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cis, 2f64.powi(-29), 16)?;
-            q_signed(entry.i0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.crc, 2f64.powi(-5), 16)?;
-            q_signed(entry.omg, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.omgdot, sc * 2f64.powi(-43), 24)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            put(0, 2)?;
+            put!(0, 4)?;
+            put!(0, 2)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            q_unsigned!(entry.toe, 16.0, 16)?;
+            q_signed!(entry.af2, 2f64.powi(-55), 8)?;
+            q_signed!(entry.af1, 2f64.powi(-43), 16)?;
+            q_signed!(entry.af0, 2f64.powi(-31), 22)?;
+            q_signed!(entry.crs, 2f64.powi(-5), 16)?;
+            q_signed!(entry.deltan, sc * 2f64.powi(-43), 16)?;
+            q_signed!(entry.m0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cuc, 2f64.powi(-29), 16)?;
+            q_unsigned!(entry.e, 2f64.powi(-33), 32)?;
+            q_signed!(entry.cus, 2f64.powi(-29), 16)?;
+            q_unsigned!(entry.sqrta, 2f64.powi(-19), 32)?;
+            q_unsigned!(entry.toe, 16.0, 16)?;
+            q_signed!(entry.cic, 2f64.powi(-29), 16)?;
+            q_signed!(entry.omg0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cis, 2f64.powi(-29), 16)?;
+            q_signed!(entry.i0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.crc, 2f64.powi(-5), 16)?;
+            q_signed!(entry.omg, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.omgdot, sc * 2f64.powi(-43), 24)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            put!(0, 2)?;
         }
         NavKind::Bds => {
-            put(0, 4)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            q_unsigned(entry.toe, 8.0, 17)?;
-            q_signed(entry.af2, 2f64.powi(-66), 11)?;
-            q_signed(entry.af1, 2f64.powi(-50), 22)?;
-            q_signed(entry.af0, 2f64.powi(-33), 24)?;
-            q_signed(entry.crs, 2f64.powi(-6), 18)?;
-            q_signed(entry.deltan, sc * 2f64.powi(-43), 16)?;
-            q_signed(entry.m0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cuc, 2f64.powi(-31), 18)?;
-            q_unsigned(entry.e, 2f64.powi(-33), 32)?;
-            q_signed(entry.cus, 2f64.powi(-31), 18)?;
-            q_unsigned(entry.sqrta, 2f64.powi(-19), 32)?;
-            q_unsigned(entry.toe, 8.0, 17)?;
-            q_signed(entry.cic, 2f64.powi(-31), 18)?;
-            q_signed(entry.omg0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cis, 2f64.powi(-31), 18)?;
-            q_signed(entry.i0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.crc, 2f64.powi(-6), 18)?;
-            q_signed(entry.omg, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.omgdot, sc * 2f64.powi(-43), 24)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            put(0, 8)?;
+            put!(0, 4)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            q_unsigned!(entry.toe, 8.0, 17)?;
+            q_signed!(entry.af2, 2f64.powi(-66), 11)?;
+            q_signed!(entry.af1, 2f64.powi(-50), 22)?;
+            q_signed!(entry.af0, 2f64.powi(-33), 24)?;
+            q_signed!(entry.crs, 2f64.powi(-6), 18)?;
+            q_signed!(entry.deltan, sc * 2f64.powi(-43), 16)?;
+            q_signed!(entry.m0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cuc, 2f64.powi(-31), 18)?;
+            q_unsigned!(entry.e, 2f64.powi(-33), 32)?;
+            q_signed!(entry.cus, 2f64.powi(-31), 18)?;
+            q_unsigned!(entry.sqrta, 2f64.powi(-19), 32)?;
+            q_unsigned!(entry.toe, 8.0, 17)?;
+            q_signed!(entry.cic, 2f64.powi(-31), 18)?;
+            q_signed!(entry.omg0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cis, 2f64.powi(-31), 18)?;
+            q_signed!(entry.i0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.crc, 2f64.powi(-6), 18)?;
+            q_signed!(entry.omg, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.omgdot, sc * 2f64.powi(-43), 24)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            put!(0, 8)?;
         }
         NavKind::Galileo => {
-            put(0, 8)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            q_unsigned(entry.toe, 60.0, 14)?;
-            q_signed(entry.af2, 2f64.powi(-59), 6)?;
-            q_signed(entry.af1, 2f64.powi(-46), 21)?;
-            q_signed(entry.af0, 2f64.powi(-34), 31)?;
-            q_signed(entry.crs, 2f64.powi(-5), 16)?;
-            q_signed(entry.deltan, sc * 2f64.powi(-43), 16)?;
-            q_signed(entry.m0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cuc, 2f64.powi(-29), 16)?;
-            q_unsigned(entry.e, 2f64.powi(-33), 32)?;
-            q_signed(entry.cus, 2f64.powi(-29), 16)?;
-            q_unsigned(entry.sqrta, 2f64.powi(-19), 32)?;
-            q_unsigned(entry.toe, 60.0, 14)?;
-            q_signed(entry.cic, 2f64.powi(-29), 16)?;
-            q_signed(entry.omg0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.cis, 2f64.powi(-29), 16)?;
-            q_signed(entry.i0, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.crc, 2f64.powi(-5), 16)?;
-            q_signed(entry.omg, sc * 2f64.powi(-31), 32)?;
-            q_signed(entry.omgdot, sc * 2f64.powi(-43), 24)?;
-            q_signed(entry.idot, sc * 2f64.powi(-43), 14)?;
-            put(0, 10)?;
-            put(0, 4)?;
+            put!(0, 8)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            q_unsigned!(entry.toe, 60.0, 14)?;
+            q_signed!(entry.af2, 2f64.powi(-59), 6)?;
+            q_signed!(entry.af1, 2f64.powi(-46), 21)?;
+            q_signed!(entry.af0, 2f64.powi(-34), 31)?;
+            q_signed!(entry.crs, 2f64.powi(-5), 16)?;
+            q_signed!(entry.deltan, sc * 2f64.powi(-43), 16)?;
+            q_signed!(entry.m0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cuc, 2f64.powi(-29), 16)?;
+            q_unsigned!(entry.e, 2f64.powi(-33), 32)?;
+            q_signed!(entry.cus, 2f64.powi(-29), 16)?;
+            q_unsigned!(entry.sqrta, 2f64.powi(-19), 32)?;
+            q_unsigned!(entry.toe, 60.0, 14)?;
+            q_signed!(entry.cic, 2f64.powi(-29), 16)?;
+            q_signed!(entry.omg0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.cis, 2f64.powi(-29), 16)?;
+            q_signed!(entry.i0, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.crc, 2f64.powi(-5), 16)?;
+            q_signed!(entry.omg, sc * 2f64.powi(-31), 32)?;
+            q_signed!(entry.omgdot, sc * 2f64.powi(-43), 24)?;
+            q_signed!(entry.idot, sc * 2f64.powi(-43), 14)?;
+            put!(0, 10)?;
+            put!(0, 4)?;
         }
     }
-    assert_eq!(w.size(), match entry.kind { NavKind::Gps => 488, NavKind::Bds => 512, NavKind::Galileo => 504 });
+    assert_eq!(
+        w.size(),
+        match entry.kind {
+            NavKind::Gps => 488,
+            NavKind::Bds => 512,
+            NavKind::Galileo => 504,
+        }
+    );
     Ok(w.payload())
 }
 
@@ -603,7 +620,8 @@ fn encode_glo(entry: &GloEntry) -> Result<Vec<u8>, String> {
     w.put(unsigned(tau.abs(), 27)?, 27)?;
     w.put(0, 6)?;
     w.put(glo_flags(entry.sv) as u64, 3)?;
-    w.put(GLO_TAIL_268, 87)?;
+    w.put(GLO_TAIL_268 as u64, 64)?;
+    w.put((GLO_TAIL_268 >> 64) as u64, 23)?;
     assert_eq!(w.size(), 360);
     Ok(w.payload())
 }
@@ -687,9 +705,9 @@ fn parse_ftp_names(listing: &str) -> Vec<String> {
 }
 
 fn gunzip(bytes: &[u8]) -> Option<String> {
-    let mut decoder = GzDecoder::new(bytes);
+    let mut decoder = GzDecoder::new(&bytes[..]);
     let mut text = String::new();
-    decoder.read_to_end(&mut text).ok()?;
+    decoder.read_to_string(&mut text).ok()?;
     Some(text)
 }
 
@@ -713,8 +731,10 @@ fn merge_rinex_text(out: &mut String, text: &str) {
         }
         out.push_str("                                                        END OF HEADER\n");
     }
-    out.push_str(header_lines.as_str());
-    out.push('\n');
+    for line in header_lines {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
 }
 
 fn parse_nav(text: &str) -> Vec<NavRecord> {
@@ -775,7 +795,10 @@ fn parse_glo(text: &str) -> Vec<GloEntry> {
         let epoch = &tokens[0..6];
         let mut body = Vec::new();
         let mut continuation = index + 1;
-        while continuation < lines.len() && lines[continuation].starts_with("   ") && body.len() < 12 {
+        while continuation < lines.len()
+            && lines[continuation].starts_with("   ")
+            && body.len() < 12
+        {
             body.extend(parse_floats(lines[continuation]));
             continuation += 1;
         }
@@ -783,7 +806,18 @@ fn parse_glo(text: &str) -> Vec<GloEntry> {
         if body.len() < 12 {
             continue;
         }
-        let Some((year, month, day, hour, minute)) = epoch.iter().map(|v| *v as i64).next_tuple() else {
+        let year = epoch.first().copied().map(|value| value as i64);
+        let month = epoch.get(1).copied().map(|value| value as i64);
+        let day = epoch.get(2).copied().map(|value| value as i64);
+        let hour = epoch.get(3).copied().map(|value| value as i64);
+        let minute = epoch.get(4).copied().map(|value| value as i64);
+        let Some((year, month, day, hour, minute)) = year
+            .zip(month)
+            .zip(day)
+            .zip(hour)
+            .zip(minute)
+            .map(|((((year, month), day), hour), minute)| (year, month, day, hour, minute))
+        else {
             continue;
         };
         let seconds = days_from_civil(year, month, day) * 86400
@@ -853,7 +887,12 @@ fn parse_floats(line: &str) -> Vec<f64> {
             index = start + 1;
             continue;
         }
-        if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E' || bytes[index] == b'd' || bytes[index] == b'D') {
+        if index < bytes.len()
+            && (bytes[index] == b'e'
+                || bytes[index] == b'E'
+                || bytes[index] == b'd'
+                || bytes[index] == b'D')
+        {
             let exponent_at = index;
             index += 1;
             if index < bytes.len() && (bytes[index] == b'-' || bytes[index] == b'+') {
@@ -874,7 +913,7 @@ fn parse_floats(line: &str) -> Vec<f64> {
     output
 }
 
-fn nav_entry(record: NavRecord, current_week: u32) -> Option<NavEntry> {
+fn nav_entry(record: NavRecord, _current_week: u32) -> Option<NavEntry> {
     let v = record.vals;
     let (kind, week) = match record.system {
         'G' if v.len() >= 27 => (NavKind::Gps, v[21].round() as u32),
@@ -945,16 +984,16 @@ fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
         ("agnss/HW_AGNSS", gz_data),
     ];
     let mut out = Vec::new();
+    let entry_count = files.len();
     for (name, data) in files {
         write_zip_entry(&mut out, name, &data, generated_at);
     }
     let size = out.len() as u32;
-    let crc = crc32(&out);
     out.extend_from_slice(&0x06054b50u32.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&files.len() as u16.to_le_bytes());
-    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(entry_count as u16).to_le_bytes());
+    out.extend_from_slice(&(entry_count as u16).to_le_bytes());
     out.extend_from_slice(&size.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out
@@ -963,12 +1002,15 @@ fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
 fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64) {
     let crc = crc32(data);
     let offset = out.len() as u32;
-    let mut parts = utc_parts(generated_at as f64);
-    if parts.year < 1980 {
-        parts = DateParts { year: 1980, month: 1, day: 1, hour: 0, minute: 0, second: 0 };
-    }
-    let dos_date = ((parts.year - 1980) << 9) | (parts.month << 5) | parts.day;
-    let dos_time = (parts.hour << 11) | (parts.minute << 5) | (parts.second / 2);
+    let parts = chrono_parts(generated_at as f64);
+    let year = parts.0.max(1980) as u32;
+    let month = if parts.0 < 1980 { 1 } else { parts.1 };
+    let day = if parts.0 < 1980 { 1 } else { parts.2 };
+    let hour = if parts.0 < 1980 { 0 } else { parts.3 };
+    let minute = if parts.0 < 1980 { 0 } else { parts.3 };
+    let second = if parts.0 < 1980 { 0 } else { parts.4 };
+    let dos_date = ((year - 1980) << 9) | (month << 5) | day;
+    let dos_time = (hour << 11) | (minute << 5) | (second / 2);
     out.extend_from_slice(&0x04034b50u32.to_le_bytes());
     out.extend_from_slice(&20u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
@@ -1017,4 +1059,6 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+#[cfg(test)]
+#[path = "ephemeris_tests.rs"]
 mod ephemeris_tests;

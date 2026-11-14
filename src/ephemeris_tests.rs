@@ -20,7 +20,10 @@ fn frame_length_and_crc() {
     let raw = frame(&payload);
     assert_eq!(raw.len(), 9);
     assert_eq!(raw[0], 0xd3);
-    assert_eq!(((raw[1] as usize & 3) << 8) | raw[2] as usize, payload.len());
+    assert_eq!(
+        ((raw[1] as usize & 3) << 8) | raw[2] as usize,
+        payload.len()
+    );
     assert_eq!(crc24q(&raw[..6]), [raw[6], raw[7], raw[8]]);
 }
 
@@ -102,7 +105,9 @@ fn zip_contains_local_agnss_only() {
             "agnss/HW_AGNSS"
         ]
     );
-    assert!(zip.windows(4).any(|window| window == [0x50, 0x4b, 0x05, 0x06]));
+    assert!(zip
+        .windows(4)
+        .any(|window| window == [0x50, 0x4b, 0x05, 0x06]));
 }
 
 #[test]
