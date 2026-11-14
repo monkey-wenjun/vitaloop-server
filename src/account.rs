@@ -718,8 +718,8 @@ fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
             format!("write account: {e}").into_bytes(),
         );
     }
-    let _ = fs::remove_file(reset_code_path(root, &id));
     revoke_sessions(root, &id).ok();
+    let _ = fs::remove_file(reset_code_path(root, &id));
     drop(_guard);
     let token = issue_session(root, &id);
     session_reply(200, &id, &email, &token)
