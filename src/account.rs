@@ -470,9 +470,7 @@ fn save_sessions(root: &Path, rows: &[(String, String, i64)]) -> std::io::Result
 }
 
 fn issue_session(root: &Path, id: &str) -> String {
-    eprintln!("debug: issue lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eprintln!("debug: issue lock got");
     let token = hex(&random_bytes(32));
     let exp = now() + SESSION_SECONDS;
     let mut rows = load_sessions(root);
@@ -486,9 +484,7 @@ fn issue_session(root: &Path, id: &str) -> String {
 }
 
 fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
-    eprintln!("debug: revoke lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eprintln!("debug: revoke lock got");
     let rows = load_sessions(root);
     save_sessions(
         root,
@@ -500,9 +496,7 @@ fn revoke_sessions(root: &Path, id: &str) -> std::io::Result<()> {
 }
 
 pub(crate) fn session_account(root: &Path, token: &str) -> Option<String> {
-    eprintln!("debug: session lock enter");
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eprintln!("debug: session lock got");
     let current = now();
     load_sessions(root)
         .into_iter()
@@ -704,19 +698,15 @@ fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
     let id = account_id(&email);
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some((stored_code, expires)) = reset_code(root, &id) else {
-        eprintln!("debug: reset file missing id={id}");
         return (401, "text/plain", b"bad reset code".to_vec());
     };
     if now() >= expires || !eq_ct(stored_code.as_bytes(), code.as_bytes()) {
-        eprintln!("debug: code mismatch stored={stored_code:?} got={code:?} expires={expires}");
         return (401, "text/plain", b"bad reset code".to_vec());
     }
     let Some((stored_email, _, _)) = read_account(root, &id) else {
-        eprintln!("debug: account missing id={id}");
         return (401, "text/plain", b"bad reset code".to_vec());
     };
     if !eq_ct(stored_email.as_bytes(), email.as_bytes()) {
-        eprintln!("debug: email mismatch stored={stored_email:?} got={email:?}");
         return (401, "text/plain", b"bad reset code".to_vec());
     }
     let salt = random_bytes(16);
@@ -730,7 +720,6 @@ fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
     }
     let _ = fs::remove_file(reset_code_path(root, &id));
     revoke_sessions(root, &id).ok();
-    eprintln!("debug: after revoke path={:?}", reset_code_path(root, &id));
     drop(_guard);
     let token = issue_session(root, &id);
     session_reply(200, &id, &email, &token)
@@ -1359,12 +1348,9 @@ mod tests {
             headers: HashMap::new(),
             body: br#"{"email":"RESET@example.com"}"#.to_vec(),
         };
-        eprintln!("debug: before begin");
         assert_eq!(route(&begin, &root).unwrap().0, 200);
-        eprintln!("debug: after begin");
         let reset = fs::read(reset_code_path(&root, &account_id("reset@example.com"))).unwrap();
         let code = json_string(&reset, "code").unwrap();
-        eprintln!("debug: read external");
 
         let wrong = Request {
             method: "POST".into(),
@@ -1386,7 +1372,6 @@ mod tests {
             .into_bytes(),
         };
         let (code_status, _, body) = route(&confirm, &root).unwrap();
-        eprintln!("debug: after confirm status={code_status}");
         assert_eq!(code_status, 200);
         let new_token = json_string(&body, "token").unwrap();
 
