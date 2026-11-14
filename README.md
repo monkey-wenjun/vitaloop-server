@@ -97,7 +97,7 @@ curl -sS -X POST http://127.0.0.1:8793/mcp \
 | `sleep` | 睡眠会话、卧床/评分与分期 |
 | `daily_metrics` | 每日汇总 |
 | `workouts` | 运动记录 |
-| `query_table` | 白名单内任意只读表 |
+| `query_table` | 白名单内任意只读表，含 `ecg_records` / `ecg_samples` |
 
 约定：时间参数为 Unix 毫秒，日汇总用 `date_day`（epoch 天）；`limit` 默认 200、上限 2000；数值不做单位换算。结果同时返回 `structuredContent` 与等价的 `content[0].text`。
 

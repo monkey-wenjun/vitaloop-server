@@ -31,7 +31,7 @@ const TIME_KEYS: [&str; 6] = [
 ];
 
 /// query_table 的只读白名单：与 Vitaloop cloud.rs 的 TABLES 一致。
-const HEALTH_TABLES: [&str; 30] = [
+const HEALTH_TABLES: [&str; 32] = [
     "daily_metrics",
     "hrv_records",
     "sleep_hrv_records",
@@ -48,6 +48,8 @@ const HEALTH_TABLES: [&str; 30] = [
     "blood_pressure_records",
     "blood_glucose_records",
     "arrhythmia_records",
+    "ecg_records",
+    "ecg_samples",
     "sleep_stages",
     "sleep_bed",
     "emotion_records",
