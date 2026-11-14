@@ -322,7 +322,7 @@ fn reset_codes_dir(root: &Path) -> PathBuf {
 }
 
 fn reset_code_path(root: &Path, id: &str) -> PathBuf {
-    reset_codes_dir(root).join(format!("{id}.json"))
+    reset_codes_dir(root).join(format!("{id}.reset.json"))
 }
 
 fn json_escape(s: &str) -> String {
@@ -640,13 +640,15 @@ fn reset_code(root: &Path, id: &str) -> Option<(String, i64)> {
 fn save_reset_code(root: &Path, id: &str, code: &str, expires: i64) -> std::io::Result<()> {
     let dir = reset_codes_dir(root);
     fs::create_dir_all(&dir)?;
-    let tmp = reset_code_path(root, id).with_extension("json.tmp");
+    eprintln!("debug: saving id={id} dir_exists={}", dir.exists());
+    let tmp = reset_codes_dir(root).join(format!("{id}.json.tmp"));
     let body = format!(
         "{{\"code\":\"{}\",\"expires\":{}}}",
         json_escape(code),
         expires
     );
     fs::write(&tmp, body)?;
+    eprintln!("debug: tmp={:?} dest={:?} exists_before={}", tmp, reset_code_path(root, id), reset_code_path(root, id).exists());
     fs::rename(&tmp, reset_code_path(root, id))
 }
 
@@ -696,15 +698,19 @@ fn reset_confirm(root: &Path, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
     let id = account_id(&email);
     let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some((stored_code, expires)) = reset_code(root, &id) else {
+        eprintln!("debug: reset file missing id={id}");
         return (401, "text/plain", b"bad reset code".to_vec());
     };
     if now() >= expires || !eq_ct(stored_code.as_bytes(), code.as_bytes()) {
+        eprintln!("debug: code mismatch stored={stored_code:?} got={code:?} expires={expires}");
         return (401, "text/plain", b"bad reset code".to_vec());
     }
     let Some((stored_email, _, _)) = read_account(root, &id) else {
+        eprintln!("debug: account missing id={id}");
         return (401, "text/plain", b"bad reset code".to_vec());
     };
     if !eq_ct(stored_email.as_bytes(), email.as_bytes()) {
+        eprintln!("debug: email mismatch stored={stored_email:?} got={email:?}");
         return (401, "text/plain", b"bad reset code".to_vec());
     }
     let salt = random_bytes(16);
@@ -1349,6 +1355,7 @@ mod tests {
         assert_eq!(route(&begin, &root).unwrap().0, 200);
         let reset = fs::read(reset_code_path(&root, &account_id("reset@example.com"))).unwrap();
         let code = json_string(&reset, "code").unwrap();
+        println!("read code={code:?}, reset={}", String::from_utf8_lossy(&reset));
 
         let wrong = Request {
             method: "POST".into(),
@@ -1370,6 +1377,7 @@ mod tests {
             .into_bytes(),
         };
         let (code_status, _, body) = route(&confirm, &root).unwrap();
+        println!("confirm status={code_status}, body={}", String::from_utf8_lossy(&body));
         assert_eq!(code_status, 200);
         let new_token = json_string(&body, "token").unwrap();
 
