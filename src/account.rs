@@ -145,6 +145,10 @@ fn app_config_path(root: &Path) -> PathBuf {
     root.join("app").join("config.json")
 }
 
+fn profile_path(root: &Path, id: &str) -> PathBuf {
+    root.join("accounts").join(id).join("profile.json")
+}
+
 /// 旧客户端上传的是 gzip 快照；合并/读取运动索引前先解压。
 fn decode_snapshot(raw: Vec<u8>) -> Option<Vec<u8>> {
     if raw.starts_with(&[0x1f, 0x8b]) {
@@ -534,6 +538,65 @@ fn json_reply(code: u16, body: String) -> (u16, &'static str, Vec<u8>) {
     (code, "application/json", body.into_bytes())
 }
 
+fn read_profile(root: &Path, id: &str) -> (String, String) {
+    let value = fs::read_to_string(profile_path(root, id))
+        .ok()
+        .and_then(|text| json::parse(&text).ok());
+    let nickname = value
+        .as_ref()
+        .and_then(|item| item.get("nickname"))
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let avatar = value
+        .as_ref()
+        .and_then(|item| item.get("avatar"))
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (nickname, avatar)
+}
+
+fn profile_reply(id: &str, nickname: &str, avatar: &str) -> (u16, &'static str, Vec<u8>) {
+    json_reply(
+        200,
+        format!(
+            "{{\"ok\":true,\"account_id\":\"{}\",\"nickname\":\"{}\",\"avatar\":\"{}\"}}",
+            json_escape(id),
+            json_escape(nickname),
+            json_escape(avatar)
+        ),
+    )
+}
+
+fn save_profile(root: &Path, id: &str, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
+    let nickname = json_string(body, "nickname").unwrap_or_default();
+    let avatar = json_string(body, "avatar").unwrap_or_default();
+    if nickname.chars().count() > 80 || avatar.chars().count() > 500 {
+        return (400, "text/plain", b"profile too large".to_vec());
+    }
+    if let Err(e) = fs::create_dir_all(accounts_dir(root).join(id)) {
+        return (
+            500,
+            "text/plain",
+            format!("create account dir: {e}").into_bytes(),
+        );
+    }
+    let path = profile_path(root, id);
+    let tmp = path.with_extension("json.tmp");
+    let body = format!(
+        "{{\"nickname\":\"{}\",\"avatar\":\"{}\",\"updated\":{}}}",
+        json_escape(&nickname),
+        json_escape(&avatar),
+        now()
+    );
+    fs::write(&tmp, body)
+        .and_then(|_| fs::rename(&tmp, &path))
+        .map_err(|e| e.to_string())
+        .map(|_| profile_reply(id, &nickname, &avatar))
+        .unwrap_or_else(|e| (500, "text/plain", e.into_bytes()))
+}
+
 fn valid_email(email: &str) -> bool {
     let email = email.trim();
     email.len() >= 5
@@ -735,6 +798,25 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
         ("POST", "/v1/account/login") => Some(login(root, &req.body)),
         ("POST", "/v1/account/reset/begin") => Some(reset_begin(root, &req.body)),
         ("POST", "/v1/account/reset/confirm") => Some(reset_confirm(root, &req.body)),
+        ("GET", "/v1/account/profile") | ("GET", "/api/v1/account/profile") => {
+            let Some(token) = bearer(req) else {
+                return Some((401, "text/plain", b"missing bearer".to_vec()));
+            };
+            let Some(id) = session_account(root, token) else {
+                return Some((401, "text/plain", b"bad session".to_vec()));
+            };
+            let (nickname, avatar) = read_profile(root, &id);
+            Some(profile_reply(&id, &nickname, &avatar))
+        }
+        ("PUT", "/v1/account/profile") | ("PUT", "/api/v1/account/profile") => {
+            let Some(token) = bearer(req) else {
+                return Some((401, "text/plain", b"missing bearer".to_vec()));
+            };
+            let Some(id) = session_account(root, token) else {
+                return Some((401, "text/plain", b"bad session".to_vec()));
+            };
+            Some(save_profile(root, &id, &req.body))
+        }
         ("GET", "/v1/account/me") => {
             let Some(token) = bearer(req) else {
                 return Some((401, "text/plain", b"missing bearer".to_vec()));
@@ -1326,6 +1408,45 @@ mod tests {
         };
         assert_eq!(route(&me, &root).unwrap().0, 200);
         assert!(!token.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn account_profile_roundtrips() {
+        let root = dir();
+        let register = Request {
+            method: "POST".into(),
+            path: "/v1/account/register".into(),
+            headers: HashMap::new(),
+            body: br#"{"email":"profile@example.com","password":"12345678"}"#.to_vec(),
+        };
+        let (_, _, body) = route(&register, &root).unwrap();
+        let token = json_string(&body, "token").unwrap();
+        let headers = HashMap::from([("authorization".into(), format!("Bearer {token}"))]);
+
+        let get = Request {
+            method: "GET".into(),
+            path: "/v1/account/profile".into(),
+            headers: headers.clone(),
+            body: Vec::new(),
+        };
+        let (code, _, body) = route(&get, &root).unwrap();
+        assert_eq!(code, 200);
+        assert_eq!(json_string(&body, "nickname").as_deref(), Some(""));
+
+        let put = Request {
+            method: "PUT".into(),
+            path: "/v1/account/profile".into(),
+            headers: headers.clone(),
+            body: format!(r#"{{"nickname":"{}","avatar":""}}"#, "\u{5143}\u{73af}").into_bytes(),
+        };
+        assert_eq!(route(&put, &root).unwrap().0, 200);
+        let (code, _, body) = route(&get, &root).unwrap();
+        assert_eq!(code, 200);
+        assert_eq!(
+            json_string(&body, "nickname").as_deref(),
+            Some("\u{5143}\u{73af}")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
