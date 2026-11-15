@@ -278,20 +278,10 @@ fn set_altitude_marker(snapshot: &mut Json) {
     }
 }
 
-fn scale_decimetres(value: &mut Json) {
-    if let Json::Number(number) = value {
-        *number = (*number / 10.0).round();
-    }
-}
-
 fn scale_by(value: &mut Json, factor: f64) {
     if let Json::Number(number) = value {
         *number = (*number * factor).round();
     }
-}
-
-fn scale_altitude_json(raw: &str, key: &str) -> Option<String> {
-    scale_altitude_json_by(raw, key, 0.1)
 }
 
 fn scale_altitude_json_by(raw: &str, key: &str, factor: f64) -> Option<String> {
@@ -378,25 +368,110 @@ fn table_rows_by_id(snapshot: &Json, table_name: &str) -> HashMap<String, Altitu
     out
 }
 
-fn looks_ten_times_larger(value: f64, previous: f64) -> bool {
-    if previous.abs() < 1.0 {
-        return false;
+/// 候选值相对基准是 10 倍（分米）还是 0.1 倍（被多除过一次）。
+fn ratio_factor(candidate: f64, reference: f64) -> Option<f64> {
+    if reference.abs() < 1.0 || candidate.abs() < 1.0 {
+        return None;
     }
-    let ratio = value / previous;
-    (8.5..=11.5).contains(&ratio)
+    let ratio = candidate / reference;
+    if (8.5..=11.5).contains(&ratio) {
+        Some(0.1)
+    } else if (0.085..=0.115).contains(&ratio) {
+        Some(10.0)
+    } else {
+        None
+    }
 }
 
-fn should_convert_row(
-    values: &[Json],
-    columns: &[String],
-    existing: Option<&AltitudeFields>,
-    convert_unseen: bool,
-) -> bool {
-    let Some(existing) = existing else {
-        // 没有旧值可比时只能靠上传方声明的单位决定。6015 及更早的包不带
-        // 请求头，但快照里的 altitude_unit_v 标记能说明它已按米落库。
-        return convert_unseen;
+fn collect_altitudes(raw: &str, key: &str) -> Vec<f64> {
+    let Ok(value) = json::parse(raw) else {
+        return Vec::new();
     };
+    let points: Vec<&Json> = match &value {
+        Json::Array(items) => items.iter().collect(),
+        Json::Object(items) => match items.iter().find(|(name, _)| name == "trkpt") {
+            Some((_, Json::Array(items))) => items.iter().collect(),
+            _ => vec![&value],
+        },
+        _ => Vec::new(),
+    };
+    points
+        .into_iter()
+        .filter_map(|point| {
+            point
+                .as_object()
+                .and_then(|items| items.iter().find(|(name, _)| name == key))
+                .map(|(_, value)| value)
+                .and_then(Json::as_f64)
+        })
+        .filter(|value| *value > -100.0)
+        .collect()
+}
+
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let middle = sorted.len() / 2;
+    Some(if sorted.len() % 2 == 0 {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    } else {
+        sorted[middle]
+    })
+}
+
+#[derive(Clone, Copy)]
+enum RowScale {
+    Factor(f64),
+    AlreadyMetres,
+    Unknown,
+}
+
+fn compare(candidate: f64, reference: f64) -> RowScale {
+    match ratio_factor(candidate, reference) {
+        Some(factor) => RowScale::Factor(factor),
+        None => RowScale::AlreadyMetres,
+    }
+}
+
+/// 用行内自带的 GPS 轨迹（`track_json[].alt` 一直是米）校验海拔采样。
+/// 这一步和客户端声明的单位无关：6016 会带 `unit=14` 头却上传被多除一次
+/// 的值，只有行内自证能把它拉回来。
+fn row_self_scale(values: &[Json], columns: &[String]) -> RowScale {
+    let index = |name: &str| columns.iter().position(|c| c == name);
+    let string_at = |name: &str| {
+        index(name)
+            .and_then(|i| values.get(i))
+            .and_then(Json::as_str)
+    };
+    let track = string_at("track_json")
+        .map(|raw| collect_altitudes(raw, "alt"))
+        .unwrap_or_default();
+    if track.len() < 3 {
+        return RowScale::Unknown;
+    }
+    let sample = string_at("altitude_json")
+        .map(|raw| collect_altitudes(raw, "alt"))
+        .unwrap_or_default();
+    let pair = if sample.len() >= 3 {
+        Some((median(&track), median(&sample)))
+    } else {
+        let max_altitude = index("max_altitude")
+            .and_then(|i| values.get(i))
+            .and_then(Json::as_f64);
+        let peak = track.iter().copied().fold(f64::MIN, f64::max);
+        max_altitude.map(|max| (Some(peak), Some(max)))
+    };
+    match pair {
+        Some((Some(reference), Some(candidate))) => compare(candidate, reference),
+        _ => RowScale::Unknown,
+    }
+}
+
+/// 没有行内 GPS 基准时，退回到与云端旧值比较。
+fn existing_scale(values: &[Json], columns: &[String], existing: &AltitudeFields) -> RowScale {
     let mut compared = false;
     for (name, previous) in [
         ("max_altitude", existing.max_altitude),
@@ -414,11 +489,37 @@ fn should_convert_row(
             continue;
         };
         compared = true;
-        if looks_ten_times_larger(incoming, previous) {
-            return true;
+        match ratio_factor(incoming, previous) {
+            Some(factor) => return RowScale::Factor(factor),
+            None => continue,
         }
     }
-    !compared
+    if compared {
+        RowScale::AlreadyMetres
+    } else {
+        RowScale::Unknown
+    }
+}
+
+/// 返回这一行需要乘的系数。`convert_unseen` 只用于「既没有行内轨迹、也没有
+/// 云端旧值」的兜底行。
+fn should_convert_row(
+    values: &[Json],
+    columns: &[String],
+    existing: Option<&AltitudeFields>,
+    convert_unseen: bool,
+) -> Option<f64> {
+    let scale = match row_self_scale(values, columns) {
+        RowScale::Unknown => existing
+            .map(|row| existing_scale(values, columns, row))
+            .unwrap_or(RowScale::Unknown),
+        known => known,
+    };
+    match scale {
+        RowScale::Factor(factor) => Some(factor),
+        RowScale::AlreadyMetres => None,
+        RowScale::Unknown => convert_unseen.then_some(0.1),
+    }
 }
 
 fn normalize_watch_rows(
@@ -461,9 +562,10 @@ fn normalize_watch_rows(
         if !id.starts_with("watch-") {
             continue;
         }
-        if !should_convert_row(values, &columns, existing.get(id), convert_unseen) {
+        let Some(factor) = should_convert_row(values, &columns, existing.get(id), convert_unseen)
+        else {
             continue;
-        }
+        };
         for name in [
             "elevation_gain",
             "elevation_loss",
@@ -471,7 +573,7 @@ fn normalize_watch_rows(
             "min_altitude",
         ] {
             if let Some(field) = index(name).and_then(|i| values.get_mut(i)) {
-                scale_decimetres(field);
+                scale_by(field, factor);
             }
         }
         for (name, key) in [("altitude_json", "alt"), ("detail_json", "altitude")] {
@@ -481,7 +583,7 @@ fn normalize_watch_rows(
             let Some(raw) = field.as_str().map(str::to_string) else {
                 continue;
             };
-            if let Some(fixed) = scale_altitude_json(&raw, key) {
+            if let Some(fixed) = scale_altitude_json_by(&raw, key, factor) {
                 *field = Json::String(fixed);
             }
         }
@@ -490,7 +592,11 @@ fn normalize_watch_rows(
     changed
 }
 
-fn normalize_snapshot_altitudes(snapshot: &mut Json, existing: &Json) -> usize {
+fn normalize_snapshot_altitudes(
+    snapshot: &mut Json,
+    existing: &Json,
+    convert_unseen: bool,
+) -> usize {
     let Some(workouts) = snapshot
         .as_object_mut()
         .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
@@ -502,12 +608,10 @@ fn normalize_snapshot_altitudes(snapshot: &mut Json, existing: &Json) -> usize {
         return 0;
     };
     let existing = table_rows_by_id(existing, "workouts");
-    // 调用方只在「上传方没带单位头、且快照里也没有 14 标记」时才会走到这里，
-    // 说明这是 6014 及更早的包，没见过的新行也按分米换算。
-    normalize_watch_rows(workouts, &existing, true)
+    normalize_watch_rows(workouts, &existing, convert_unseen)
 }
 
-fn normalize_delta_altitudes(delta: &mut Json, existing: &Json) -> usize {
+fn normalize_delta_altitudes(delta: &mut Json, existing: &Json, convert_unseen: bool) -> usize {
     let Some(tables) = delta
         .as_object_mut()
         .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
@@ -516,7 +620,6 @@ fn normalize_delta_altitudes(delta: &mut Json, existing: &Json) -> usize {
     else {
         return 0;
     };
-    let convert_unseen = !snapshot_reports_metres(existing);
     tables
         .iter_mut()
         .filter(|(name, _)| name == "workouts")
@@ -532,6 +635,42 @@ fn delta_touches_workouts(delta: &Json) -> bool {
         .get("tables")
         .and_then(Json::as_object)
         .map(|tables| tables.iter().any(|(name, _)| name == "workouts"))
+        .unwrap_or(false)
+}
+
+/// 增量里的运动行如果都能用行内 GPS 轨迹自证，就不必为了比对旧值去读
+/// 整份基线快照（真实账号可达 86 MB）。
+fn delta_needs_baseline(delta: &Json) -> bool {
+    let Some(table) = delta.get("tables").and_then(|v| v.get("workouts")) else {
+        return false;
+    };
+    let Some(columns) = table.get("columns").and_then(Json::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    }) else {
+        return false;
+    };
+    let Some(id_index) = columns.iter().position(|c| c == "id") else {
+        return false;
+    };
+    table
+        .get("rows")
+        .and_then(Json::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                let Some(values) = row.as_array() else {
+                    return false;
+                };
+                let is_watch = values
+                    .get(id_index)
+                    .and_then(Json::as_str)
+                    .is_some_and(|id| id.starts_with("watch-"));
+                is_watch && matches!(row_self_scale(values, &columns), RowScale::Unknown)
+            })
+        })
         .unwrap_or(false)
 }
 
@@ -1362,8 +1501,13 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 .and_then(|raw| String::from_utf8(raw).ok())
                 .and_then(|text| json::parse(&text).ok())
                 .unwrap_or(Json::Null);
-            if !client_reports_metres(req) && !snapshot_reports_metres(&snapshot) {
-                normalize_snapshot_altitudes(&mut snapshot, &existing);
+            // 行内 GPS 轨迹自证始终执行：6016 会带着 unit=14 头上传被多除一次
+            // 的值，只看声明会把它原样覆盖到云端。声明只决定「没有基准的新行」
+            // 要不要按分米兜底。
+            let convert_unseen = !client_reports_metres(req) && !snapshot_reports_metres(&snapshot);
+            if normalize_snapshot_altitudes(&mut snapshot, &existing, convert_unseen) > 0
+                || convert_unseen
+            {
                 set_altitude_marker(&mut snapshot);
             }
             let snapshot = snapshot.render().into_bytes();
@@ -1429,14 +1573,21 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             let mut value = value;
             // 旧客户端每分钟都会传增量；绝大多数增量不含 workouts。
             // 只有真的要改 workouts 时才去读并解析整份基线快照（可达 86 MB）。
-            if !client_reports_metres(req) && delta_touches_workouts(&value) {
-                let existing = decode_snapshot(fs::read(&base).unwrap_or_default())
-                    .and_then(|raw| String::from_utf8(raw).ok())
-                    .and_then(|text| json::parse(&text).ok())
-                    .unwrap_or(Json::Null);
-                // 6015 的快照里已有 14 标记，它的增量也已是米。
-                if !snapshot_reports_metres(&existing) {
-                    normalize_delta_altitudes(&mut value, &existing);
+            if delta_touches_workouts(&value) {
+                let convert_unseen = !client_reports_metres(req);
+                if !convert_unseen && !delta_needs_baseline(&value) {
+                    // 新客户端（unit=14）且每行都能自证：直接按行内轨迹校正，
+                    // 不读基线。
+                    normalize_delta_altitudes(&mut value, &Json::Null, false);
+                } else {
+                    let existing = decode_snapshot(fs::read(&base).unwrap_or_default())
+                        .and_then(|raw| String::from_utf8(raw).ok())
+                        .and_then(|text| json::parse(&text).ok())
+                        .unwrap_or(Json::Null);
+                    // 6015 的快照里已有 14 标记，它的增量也已是米；标记只影响
+                    // 没有轨迹可比的兜底行。
+                    let convert_unseen = convert_unseen && !snapshot_reports_metres(&existing);
+                    normalize_delta_altitudes(&mut value, &existing, convert_unseen);
                 }
             }
             let text = value.render();
@@ -2285,7 +2436,10 @@ mod tests {
     fn decimetre_upload_is_normalized_against_previous_snapshot() {
         let previous = altitude_snapshot(161.0, 201.0);
         let mut incoming = altitude_snapshot(1607.0, 2006.0);
-        assert_eq!(normalize_snapshot_altitudes(&mut incoming, &previous), 1);
+        assert_eq!(
+            normalize_snapshot_altitudes(&mut incoming, &previous, true),
+            1
+        );
         set_altitude_marker(&mut incoming);
         let row = incoming
             .get("tables")
@@ -2313,7 +2467,10 @@ mod tests {
     fn already_metric_upload_is_left_untouched() {
         let previous = altitude_snapshot(161.0, 201.0);
         let mut incoming = altitude_snapshot(161.0, 201.0);
-        assert_eq!(normalize_snapshot_altitudes(&mut incoming, &previous), 0);
+        assert_eq!(
+            normalize_snapshot_altitudes(&mut incoming, &previous, true),
+            0
+        );
         let row = incoming
             .get("tables")
             .and_then(|v| v.get("workouts"))
@@ -2323,6 +2480,91 @@ mod tests {
             .and_then(Json::as_array)
             .unwrap();
         assert_eq!(row[2].as_f64(), Some(161.0));
+    }
+
+    fn track_snapshot(altitudes: &[f64], max: f64, gain: f64, sample_factor: f64) -> Json {
+        let track = altitudes
+            .iter()
+            .map(|alt| format!(r#"{{\"alt\":{alt}}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sample = altitudes
+            .iter()
+            .map(|alt| format!(r#"{{\"alt\":{}}}"#, alt * sample_factor))
+            .collect::<Vec<_>>()
+            .join(",");
+        json::parse(&format!(
+            r#"{{"version":1,"tables":{{
+                "workouts":{{"columns":["id","elevation_gain","max_altitude","altitude_json","track_json"],
+                    "rows":[["watch-29-1",{gain},{max},"[{sample}]","{{\"trkpt\":[{track}]}}"]]}},
+                "settings":{{"columns":["key","value"],"rows":[]}}
+            }}}}"#
+        ))
+        .unwrap()
+    }
+
+    fn first_row(snapshot: &Json) -> &[Json] {
+        snapshot
+            .get("tables")
+            .and_then(|v| v.get("workouts"))
+            .and_then(|v| v.get("rows"))
+            .and_then(Json::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Json::as_array)
+            .unwrap()
+    }
+
+    #[test]
+    fn client_claiming_metres_still_gets_rescued_by_its_own_track() {
+        // 6016 的现实场景：云端 161 m，6016 带 unit=14 头上传 16 m。
+        let previous = altitude_snapshot(161.0, 201.0);
+        let mut incoming = track_snapshot(&[12.0, 100.0, 161.0], 16.0, 20.0, 0.1);
+        assert_eq!(
+            normalize_snapshot_altitudes(&mut incoming, &previous, false),
+            1
+        );
+        // 16 是被除过一次并四舍五入的结果，拉回来是 160（不是 1610）。
+        let row = first_row(&incoming);
+        assert_eq!(row[2].as_f64(), Some(160.0));
+        assert_eq!(row[1].as_f64(), Some(200.0));
+        let altitude_json = row[3].as_str().unwrap();
+        assert!(altitude_json.contains("161"));
+    }
+
+    #[test]
+    fn decimetre_row_is_fixed_even_without_previous_snapshot() {
+        let mut incoming = track_snapshot(&[12.0, 100.0, 161.0], 1607.0, 2006.0, 10.0);
+        assert_eq!(
+            normalize_snapshot_altitudes(&mut incoming, &Json::Null, false),
+            1
+        );
+        let row = first_row(&incoming);
+        assert_eq!(row[2].as_f64(), Some(161.0));
+        assert_eq!(row[1].as_f64(), Some(201.0));
+    }
+
+    #[test]
+    fn ratio_factor_is_symmetric_and_ignores_noise() {
+        assert_eq!(ratio_factor(1610.0, 161.0), Some(0.1));
+        assert_eq!(ratio_factor(16.0, 161.0), Some(10.0));
+        assert_eq!(ratio_factor(165.0, 161.0), None);
+        assert_eq!(ratio_factor(0.5, 161.0), None);
+        assert_eq!(ratio_factor(1610.0, 0.0), None);
+    }
+
+    #[test]
+    fn replayed_real_snapshot_is_idempotent() {
+        // 线上真实形态：track 是米，altitude_json 也是米（已修正过）。
+        // 再上传一遍必须 0 改动，否则每次同步都会来回除/乘 10。
+        let snapshot = track_snapshot(&[12.0, 100.0, 161.0], 161.0, 201.0, 1.0);
+        let mut replayed = snapshot.clone();
+        assert_eq!(
+            normalize_snapshot_altitudes(&mut replayed, &snapshot, false),
+            0
+        );
+        let row = first_row(&replayed);
+        assert_eq!(row[2].as_f64(), Some(161.0));
+        assert_eq!(row[1].as_f64(), Some(201.0));
     }
 
     #[test]
@@ -2337,6 +2579,22 @@ mod tests {
         )
         .unwrap();
         assert!(delta_touches_workouts(&workouts));
+    }
+
+    #[test]
+    fn self_verifying_delta_does_not_need_baseline() {
+        let self_verified = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["id","max_altitude","altitude_json","track_json"],
+                "rows":[["watch-1",1607,"[{\"alt\":1607}]","{\"trkpt\":[{\"alt\":12},{\"alt\":100},{\"alt\":161}]}"]]}}}"#,
+        )
+        .unwrap();
+        assert!(!delta_needs_baseline(&self_verified));
+        let no_track = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["id","max_altitude"],
+                "rows":[["watch-1",1607]]}}}"#,
+        )
+        .unwrap();
+        assert!(delta_needs_baseline(&no_track));
     }
 
     #[test]

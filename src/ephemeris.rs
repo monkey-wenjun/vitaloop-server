@@ -266,11 +266,10 @@ impl EphemerisService {
         let port = port.parse::<u16>().unwrap_or(2101);
         // 站点表来自 caster 自己的 sourcetable：硬编码站点一旦下线/改频就会
         // 悄悄退化成「只有几颗卫星」。取不到时才用兜底列表。
-        let mounts = ntrip_mounts(host, port, self.ntrip_auth.as_deref())
-            .unwrap_or_else(|error| {
-                eprintln!("NTRIP sourcetable 不可用（{error}），使用兜底站点");
-                NTRIP_MOUNTS.iter().map(|m| m.to_string()).collect()
-            });
+        let mounts = ntrip_mounts(host, port, self.ntrip_auth.as_deref()).unwrap_or_else(|error| {
+            eprintln!("NTRIP sourcetable 不可用（{error}），使用兜底站点");
+            NTRIP_MOUNTS.iter().map(|m| m.to_string()).collect()
+        });
         if mounts.is_empty() {
             return Err("NTRIP sourcetable 里没有多系统站点".into());
         }
@@ -339,7 +338,10 @@ impl EphemerisService {
         for (message, ideal) in NTRIP_IDEAL {
             let count = union.get(&message).map(|t| t.len()).unwrap_or(0);
             if count < ideal {
-                eprintln!("NTRIP {} 只有 {} 颗（理想 {}），继续使用", message, count, ideal);
+                eprintln!(
+                    "NTRIP {} 只有 {} 颗（理想 {}），继续使用",
+                    message, count, ideal
+                );
             }
         }
         let mut rtcm = Vec::new();
@@ -1004,8 +1006,7 @@ fn ntrip_mounts(host: &str, port: u16, auth: Option<&str>) -> Result<Vec<String>
 /// 标准 Base64（NTRIP Basic 认证用）。项目零第三方依赖，这里只处理
 /// `user:pass` 这种短 ASCII 串。
 fn base64(input: &str) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

@@ -179,7 +179,10 @@ fn zip_contains_local_agnss_only() {
         zip[eocd + 15],
     ]) as usize;
     assert_eq!(central_offset + central_size, eocd);
-    assert_eq!(&zip[central_offset..central_offset + 4], &[0x50, 0x4b, 0x01, 0x02]);
+    assert_eq!(
+        &zip[central_offset..central_offset + 4],
+        &[0x50, 0x4b, 0x01, 0x02]
+    );
 }
 
 #[test]
