@@ -139,7 +139,10 @@ fn table_row_counts(snapshot: &Json) -> Option<HashMap<String, usize>> {
     let tables = snapshot.get("tables")?.as_object()?;
     let mut counts = HashMap::with_capacity(tables.len());
     for (name, block) in tables {
-        let rows = block.get("rows").and_then(Json::as_array).map(<[Json]>::len)?;
+        let rows = block
+            .get("rows")
+            .and_then(Json::as_array)
+            .map(<[Json]>::len)?;
         counts.insert(name.clone(), rows);
     }
     Some(counts)
@@ -208,28 +211,6 @@ fn key_of(row: &[Json], key_index: &[usize]) -> Option<String> {
 
 const ALTITUDE_UNIT_KEY: &str = "altitude_unit_v";
 const ALTITUDE_UNIT_VERSION: &str = "14";
-
-fn altitude_marker(snapshot: &Json) -> Option<String> {
-    let settings = snapshot.get("tables")?.get("settings")?;
-    let columns: Vec<&str> = settings
-        .get("columns")?
-        .as_array()?
-        .iter()
-        .filter_map(Json::as_str)
-        .collect();
-    let key_index = columns.iter().position(|c| *c == "key")?;
-    let value_index = columns.iter().position(|c| *c == "value")?;
-    settings
-        .get("rows")?
-        .as_array()?
-        .iter()
-        .filter_map(Json::as_array)
-        .find_map(|row| {
-            (row.get(key_index)?.as_str()? == ALTITUDE_UNIT_KEY)
-                .then(|| row.get(value_index).and_then(Json::as_str).map(str::to_string))
-                .flatten()
-        })
-}
 
 fn set_altitude_marker(snapshot: &mut Json) {
     let Some(tables) = snapshot
@@ -331,18 +312,110 @@ fn scale_altitude_json(raw: &str, key: &str) -> Option<String> {
 
 /// 旧版客户端把手表分米当米上传。服务端入库时按行修正，避免旧包再次
 /// 把已修正的云端数据覆盖回放大 10 倍的值。
-fn normalize_watch_rows(table: &mut Json) -> usize {
-    let Some(columns) = table
-        .get("columns")
-        .and_then(Json::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Json::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
+#[derive(Default, Clone, Copy)]
+struct AltitudeFields {
+    max_altitude: Option<f64>,
+    min_altitude: Option<f64>,
+    elevation_gain: Option<f64>,
+    elevation_loss: Option<f64>,
+}
+
+fn table_rows_by_id(snapshot: &Json, table_name: &str) -> HashMap<String, AltitudeFields> {
+    let Some(table) = snapshot
+        .get("tables")
+        .and_then(|value| value.get(table_name))
     else {
+        return HashMap::new();
+    };
+    let Some(columns) = table.get("columns").and_then(Json::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    }) else {
+        return HashMap::new();
+    };
+    let Some(id_index) = columns.iter().position(|c| c == "id") else {
+        return HashMap::new();
+    };
+    let field_index = |name: &str| columns.iter().position(|c| c == name);
+    let number_at = |values: &[Json], index: Option<usize>| {
+        index.and_then(|i| values.get(i)).and_then(Json::as_f64)
+    };
+    let max_altitude = field_index("max_altitude");
+    let min_altitude = field_index("min_altitude");
+    let elevation_gain = field_index("elevation_gain");
+    let elevation_loss = field_index("elevation_loss");
+    let mut out = HashMap::new();
+    for row in table.get("rows").and_then(Json::as_array).unwrap_or(&[]) {
+        let Some(values) = row.as_array() else {
+            continue;
+        };
+        let Some(id) = values.get(id_index).and_then(Json::as_str) else {
+            continue;
+        };
+        out.insert(
+            id.to_string(),
+            AltitudeFields {
+                max_altitude: number_at(values, max_altitude),
+                min_altitude: number_at(values, min_altitude),
+                elevation_gain: number_at(values, elevation_gain),
+                elevation_loss: number_at(values, elevation_loss),
+            },
+        );
+    }
+    out
+}
+
+fn looks_ten_times_larger(value: f64, previous: f64) -> bool {
+    if previous.abs() < 1.0 {
+        return false;
+    }
+    let ratio = value / previous;
+    (8.5..=11.5).contains(&ratio)
+}
+
+fn should_convert_row(
+    values: &[Json],
+    columns: &[String],
+    existing: Option<&AltitudeFields>,
+) -> bool {
+    let Some(existing) = existing else {
+        return true;
+    };
+    let mut compared = false;
+    for (name, previous) in [
+        ("max_altitude", existing.max_altitude),
+        ("min_altitude", existing.min_altitude),
+        ("elevation_gain", existing.elevation_gain),
+        ("elevation_loss", existing.elevation_loss),
+    ] {
+        let Some(index) = columns.iter().position(|c| c == name) else {
+            continue;
+        };
+        let Some(incoming) = values.get(index).and_then(Json::as_f64) else {
+            continue;
+        };
+        let Some(previous) = previous else {
+            continue;
+        };
+        compared = true;
+        if looks_ten_times_larger(incoming, previous) {
+            return true;
+        }
+    }
+    !compared
+}
+
+fn normalize_watch_rows(table: &mut Json, existing: &HashMap<String, AltitudeFields>) -> usize {
+    let Some(columns) = table.get("columns").and_then(Json::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    }) else {
         return 0;
     };
     let index = |name: &str| columns.iter().position(|c| c == name);
@@ -371,6 +444,9 @@ fn normalize_watch_rows(table: &mut Json) -> usize {
         if !id.starts_with("watch-") {
             continue;
         }
+        if !should_convert_row(values, &columns, existing.get(id)) {
+            continue;
+        }
         for name in [
             "elevation_gain",
             "elevation_loss",
@@ -397,7 +473,7 @@ fn normalize_watch_rows(table: &mut Json) -> usize {
     changed
 }
 
-fn normalize_snapshot_altitudes(snapshot: &mut Json) -> usize {
+fn normalize_snapshot_altitudes(snapshot: &mut Json, existing: &Json) -> usize {
     let Some(workouts) = snapshot
         .as_object_mut()
         .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
@@ -408,10 +484,11 @@ fn normalize_snapshot_altitudes(snapshot: &mut Json) -> usize {
     else {
         return 0;
     };
-    normalize_watch_rows(workouts)
+    let existing = table_rows_by_id(existing, "workouts");
+    normalize_watch_rows(workouts, &existing)
 }
 
-fn normalize_delta_altitudes(delta: &mut Json) -> usize {
+fn normalize_delta_altitudes(delta: &mut Json, existing: &Json) -> usize {
     let Some(tables) = delta
         .as_object_mut()
         .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
@@ -423,13 +500,24 @@ fn normalize_delta_altitudes(delta: &mut Json) -> usize {
     tables
         .iter_mut()
         .filter(|(name, _)| name == "workouts")
-        .map(|(_, table)| normalize_watch_rows(table))
+        .map(|(_, table)| {
+            let rows = table_rows_by_id(existing, "workouts");
+            normalize_watch_rows(table, &rows)
+        })
         .sum()
+}
+
+fn delta_touches_workouts(delta: &Json) -> bool {
+    delta
+        .get("tables")
+        .and_then(Json::as_object)
+        .map(|tables| tables.iter().any(|(name, _)| name == "workouts"))
+        .unwrap_or(false)
 }
 
 fn client_reports_metres(req: &Request) -> bool {
     req.headers
-        .get("x-vitaloop-altitude-unit")
+        .get("x-awen-altitude-unit")
         .map(|value| value.trim() == ALTITUDE_UNIT_VERSION)
         .unwrap_or(false)
 }
@@ -1167,8 +1255,12 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 Some(value) => value,
                 None => return Some((400, "text/plain", b"invalid snapshot json".to_vec())),
             };
+            let existing = decode_snapshot(fs::read(&file).unwrap_or_default())
+                .and_then(|raw| String::from_utf8(raw).ok())
+                .and_then(|text| json::parse(&text).ok())
+                .unwrap_or(Json::Null);
             if !client_reports_metres(req) {
-                normalize_snapshot_altitudes(&mut snapshot);
+                normalize_snapshot_altitudes(&mut snapshot, &existing);
                 set_altitude_marker(&mut snapshot);
             }
             let snapshot = snapshot.render().into_bytes();
@@ -1176,15 +1268,10 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             // 上传，这里按行数骤降识别并拒绝，除非显式带 force=1。
             let force = query.split('&').any(|part| part == "force=1");
             if !force {
-                let old_raw = decode_snapshot(fs::read(&file).unwrap_or_default());
-                let parsed = old_raw
-                    .and_then(|raw| String::from_utf8(raw).ok())
+                let parsed = String::from_utf8(snapshot.clone())
+                    .ok()
                     .and_then(|text| json::parse(&text).ok())
-                    .zip(
-                        String::from_utf8(snapshot.clone())
-                            .ok()
-                            .and_then(|text| json::parse(&text).ok()),
-                    );
+                    .map(|new| (existing, new));
                 if let Some((old, new)) = parsed {
                     if let Some(reason) = snapshot_shrink(&old, &new) {
                         return Some((409, "text/plain", reason.into_bytes()));
@@ -1230,8 +1317,14 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 return Some((400, "text/plain", b"missing delta tables".to_vec()));
             }
             let mut value = value;
-            if !client_reports_metres(req) {
-                normalize_delta_altitudes(&mut value);
+            // 旧客户端每分钟都会传增量；绝大多数增量不含 workouts。
+            // 只有真的要改 workouts 时才去读并解析整份基线快照（可达 86 MB）。
+            if !client_reports_metres(req) && delta_touches_workouts(&value) {
+                let existing = decode_snapshot(fs::read(&base).unwrap_or_default())
+                    .and_then(|raw| String::from_utf8(raw).ok())
+                    .and_then(|text| json::parse(&text).ok())
+                    .unwrap_or(Json::Null);
+                normalize_delta_altitudes(&mut value, &existing);
             }
             let text = value.render();
             let patches = patches_path(root, &id);
@@ -1639,10 +1732,7 @@ mod tests {
 
     fn put_health(root: &Path, token: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
         let mut headers = HashMap::new();
-        headers.insert(
-            "authorization".to_string(),
-            format!("Bearer {token}"),
-        );
+        headers.insert("authorization".to_string(), format!("Bearer {token}"));
         let req = Request {
             method: "PUT".into(),
             path: path.into(),
@@ -1657,17 +1747,27 @@ mod tests {
     fn shrunk_snapshot_is_rejected_unless_forced() {
         let root = dir();
         let email = "guard@example.com";
-        let (code, _, body) = register(&root, format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes());
+        let (code, _, body) = register(
+            &root,
+            format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes(),
+        );
         assert_eq!(code, 201);
         let reply = json::parse(std::str::from_utf8(&body).unwrap()).unwrap();
-        let token = reply.get("token").and_then(Json::as_str).unwrap().to_string();
+        let token = reply
+            .get("token")
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_string();
 
         let full: Vec<String> = (0..100).map(|i| format!(r#"[{i},60]"#)).collect();
         let full = format!(
             r#"{{"version":1,"tables":{{"heart_rate_points":{{"columns":["ts_ms","bpm"],"rows":[{}]}}}}}}"#,
             full.join(",")
         );
-        assert_eq!(put_health(&root, &token, "/v1/health/data", full.as_bytes()).0, 200);
+        assert_eq!(
+            put_health(&root, &token, "/v1/health/data", full.as_bytes()).0,
+            200
+        );
 
         let shrunk = r#"{"version":1,"tables":{"heart_rate_points":{"columns":["ts_ms","bpm"],"rows":[[1,60]]}}}"#;
         let (code, body) = put_health(&root, &token, "/v1/health/data", shrunk.as_bytes());
@@ -1688,10 +1788,17 @@ mod tests {
     fn gzip_snapshot_is_compared_before_write() {
         let root = dir();
         let email = "gzip-guard@example.com";
-        let (code, _, body) = register(&root, format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes());
+        let (code, _, body) = register(
+            &root,
+            format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes(),
+        );
         assert_eq!(code, 201);
         let reply = json::parse(std::str::from_utf8(&body).unwrap()).unwrap();
-        let token = reply.get("token").and_then(Json::as_str).unwrap().to_string();
+        let token = reply
+            .get("token")
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_string();
 
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         use std::io::Write;
@@ -2048,6 +2155,88 @@ mod tests {
         assert_eq!(rows[1].as_array().unwrap()[0].as_f64(), Some(3.0));
     }
 
+    fn altitude_snapshot(max: f64, gain: f64) -> Json {
+        json::parse(&format!(
+            r#"{{"version":1,"tables":{{
+                "workouts":{{"columns":["id","elevation_gain","max_altitude","altitude_json"],
+                    "rows":[["watch-29-1",{gain},{max},"{{\"alt\":{max}}}"]]}},
+                "settings":{{"columns":["key","value"],"rows":[]}}
+            }}}}"#,
+            gain = gain,
+            max = max
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn decimetre_upload_is_normalized_against_previous_snapshot() {
+        let previous = altitude_snapshot(161.0, 201.0);
+        let mut incoming = altitude_snapshot(1607.0, 2006.0);
+        assert_eq!(normalize_snapshot_altitudes(&mut incoming, &previous), 1);
+        set_altitude_marker(&mut incoming);
+        let row = incoming
+            .get("tables")
+            .and_then(|v| v.get("workouts"))
+            .and_then(|v| v.get("rows"))
+            .and_then(Json::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(row[1].as_f64(), Some(201.0));
+        assert_eq!(row[2].as_f64(), Some(161.0));
+        let marker = incoming
+            .get("tables")
+            .and_then(|v| v.get("settings"))
+            .and_then(|v| v.get("rows"))
+            .and_then(Json::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(marker[0].as_str(), Some("altitude_unit_v"));
+        assert_eq!(marker[1].as_str(), Some("14"));
+    }
+
+    #[test]
+    fn already_metric_upload_is_left_untouched() {
+        let previous = altitude_snapshot(161.0, 201.0);
+        let mut incoming = altitude_snapshot(161.0, 201.0);
+        assert_eq!(normalize_snapshot_altitudes(&mut incoming, &previous), 0);
+        let row = incoming
+            .get("tables")
+            .and_then(|v| v.get("workouts"))
+            .and_then(|v| v.get("rows"))
+            .and_then(Json::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(row[2].as_f64(), Some(161.0));
+    }
+
+    #[test]
+    fn delta_without_workouts_skips_baseline_lookup() {
+        let steps = json::parse(
+            r#"{"tables":{"daily_metrics":{"key":["date_day"],"columns":["date_day","steps"],"rows":[[1,100]]}}}"#,
+        )
+        .unwrap();
+        assert!(!delta_touches_workouts(&steps));
+        let workouts = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["id"],"rows":[["watch-1"]]}}}"#,
+        )
+        .unwrap();
+        assert!(delta_touches_workouts(&workouts));
+    }
+
+    #[test]
+    fn baseline_index_keeps_only_altitude_fields() {
+        let snapshot = altitude_snapshot(161.0, 201.0);
+        let rows = table_rows_by_id(&snapshot, "workouts");
+        let row = rows.get("watch-29-1").unwrap();
+        assert_eq!(row.max_altitude, Some(161.0));
+        assert_eq!(row.elevation_gain, Some(201.0));
+        assert_eq!(row.min_altitude, None);
+        assert_eq!(row.elevation_loss, None);
+    }
+
     #[test]
     fn table_scoped_merge_keeps_only_requested_tables() {
         let root = dir();
@@ -2149,10 +2338,7 @@ mod tests {
         fs::create_dir_all(&account_dir).unwrap();
 
         let snapshot = br#"{"tables":{"daily_metrics":{"columns":["day","steps"],"key":["day"],"rows":[[1,1234]]}}}"#;
-        let mut encoder = flate2::write::GzEncoder::new(
-            Vec::new(),
-            flate2::Compression::default(),
-        );
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         use std::io::Write;
         encoder.write_all(snapshot).unwrap();
         fs::write(account_dir.join("health.json"), encoder.finish().unwrap()).unwrap();
