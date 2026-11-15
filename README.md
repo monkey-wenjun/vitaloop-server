@@ -47,11 +47,21 @@ docker build -f Dockerfile.binary -t vitaloop-server:latest build/
 
 Dockerfile 内的 apt、Rustup、crates.io 已默认走清华镜像源，网络正常时多阶段构建也可用。
 
-### 生产部署位置
+### 体验地址
 
-线上服务只部署在 `阿里云`（`8.152.212.165`），数据目录
-`/home/wenjun/vitaloop-sync-data` 绑定到容器 `/data`。不要再部署到 `46` 或其它机器，
-`vitaloop.awen.me` 的 CDN 只回源到这台。
+作者自建了一个演示实例，仅供**体验功能**（看看接口长什么样、MCP 能不能连）。
+**不要把真实的健康数据同步上去**：那是个人自用的小机器，随时可能重装、
+清库或下线，没有备份承诺，也不做多副本。
+
+长期使用请按下面的步骤自己私有化部署一份，数据放自己的机器上：
+
+```bash
+git clone https://github.com/monkey-wenjun/vitaloop-server.git
+cd vitaloop-server
+docker compose up -d --build
+```
+
+然后用自己的域名做 HTTPS 反代（见下方 nginx 示例），把域名填进 App。
 
 运行：
 
