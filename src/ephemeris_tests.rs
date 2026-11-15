@@ -210,3 +210,30 @@ fn civil_day_conversion_matches_epoch() {
     );
     assert_eq!(chrono_parts(1_794_708_900.0), (2026, 11, 15, 2, 15, 0));
 }
+
+#[test]
+fn ntrip_extract_keeps_ephemeris_frames_only() {
+    let payload = vec![0u8; 40];
+    let mut message = vec![0x3f, 0xb0];
+    message.extend_from_slice(&payload);
+    let mut frame = vec![0xd3, 0x00, message.len() as u8];
+    frame.extend_from_slice(&message);
+    let crc = crc24q(&frame);
+    frame.extend_from_slice(&crc);
+
+    let mut buf = frame;
+    let mut out = Vec::new();
+    extract_rtcm(&mut buf, &mut out);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].0, 1019);
+    assert!(buf.is_empty());
+}
+
+#[test]
+fn ntrip_extract_drops_corrupted_frames() {
+    let frame = vec![0xd3, 0x00, 0x04, 0x3f, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut buf = frame;
+    let mut out = Vec::new();
+    extract_rtcm(&mut buf, &mut out);
+    assert!(out.is_empty());
+}

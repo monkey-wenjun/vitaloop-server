@@ -130,6 +130,8 @@ struct Ephemeris {
 pub struct EphemerisService {
     upstream: String,
     ntrip: String,
+    ntrip_auth: Option<String>,
+    ntrip_only: bool,
     local: Mutex<Option<PathBuf>>,
     agent: Agent,
     cache: Mutex<Option<Ephemeris>>,
@@ -153,6 +155,20 @@ impl EphemerisService {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_NTRIP.to_string());
+        let ntrip_auth = match (
+            std::env::var("EPHEMERIS_NTRIP_USER").ok(),
+            std::env::var("EPHEMERIS_NTRIP_PASS").ok(),
+        ) {
+            (Some(user), Some(pass)) if !user.trim().is_empty() => {
+                Some(base64(&format!("{}:{}", user.trim(), pass)))
+            }
+            _ => None,
+        };
+        // 国内机器上 BKG/WHU 常年不可达，设 EPHEMERIS_SOURCE=ntrip 可跳过
+        // 每次几十秒的 RINEX 超时，直接走广播星历流。
+        let ntrip_only = std::env::var("EPHEMERIS_SOURCE")
+            .map(|value| value.trim().eq_ignore_ascii_case("ntrip"))
+            .unwrap_or(false);
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(2)
@@ -160,6 +176,8 @@ impl EphemerisService {
         Self {
             upstream,
             ntrip,
+            ntrip_auth,
+            ntrip_only,
             local: Mutex::new(local),
             agent: config.into(),
             cache: Mutex::new(None),
@@ -222,6 +240,9 @@ impl EphemerisService {
         }
         // BKG/WHU 这类学术网镜像在国内机器上经常整段不可达；RINEX 拿不到时
         // 退回公开 NTRIP 流，直接复用当前的广播星历帧。
+        if self.ntrip_only {
+            return self.make_from_ntrip(started);
+        }
         let rinex_result = self.fetch_hourly();
         let rinex_error = match rinex_result {
             Ok((rinex, source)) => match self.make(&rinex, source, started) {
@@ -235,19 +256,19 @@ impl EphemerisService {
     }
 
     fn make_from_ntrip(&self, started: Instant) -> Result<Ephemeris, String> {
-        let (host, port) = self.ntrip.split_once(':').unwrap_or((self.ntrip.as_str(), "2101"));
+        let (host, port) = self
+            .ntrip
+            .split_once(':')
+            .unwrap_or((self.ntrip.as_str(), "2101"));
         let port = port.parse::<u16>().unwrap_or(2101);
         let mut union: BTreeMap<u32, BTreeMap<u32, (u64, Vec<u8>)>> = BTreeMap::new();
         let mut errors = Vec::new();
         for mount in NTRIP_MOUNTS {
-            match ntrip_grab(host, port, mount, 30) {
+            match ntrip_grab(host, port, mount, 30, self.ntrip_auth.as_deref()) {
                 Ok(frames) => {
                     for (message, sv, toe, frame) in frames {
                         let table = union.entry(message).or_default();
-                        let keep = table
-                            .get(&sv)
-                            .map(|(old, _)| toe >= *old)
-                            .unwrap_or(true);
+                        let keep = table.get(&sv).map(|(old, _)| toe >= *old).unwrap_or(true);
                         if keep {
                             table.insert(sv, (toe, frame));
                         }
@@ -782,6 +803,151 @@ fn day_of_year(year: i64, month: u32, day: u32) -> u32 {
         }
     }
     result
+}
+
+/// 从 NTRIP caster 拉一段时间的数据流，取出 1019/1020/1042/1046 帧。
+/// 返回 `(message, sv, toe, frame)`；同一个 SV 由调用方按 toe 取最新。
+fn ntrip_grab(
+    host: &str,
+    port: u16,
+    mount: &str,
+    seconds: u64,
+    auth: Option<&str>,
+) -> Result<Vec<(u32, u32, u64, Vec<u8>)>, String> {
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect((host, port))
+        .map_err(|error| format!("连接 {host}:{port} 失败：{error}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let auth_header = auth
+        .map(|value| format!("Authorization: Basic {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET /{mount} HTTP/1.0\r\nHost: {host}\r\nNtrip-Version: Ntrip/2.0\r\n\
+         User-Agent: NTRIP vitaloop-eph/1.0\r\n{auth_header}Connection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("发送请求失败：{error}"))?;
+
+    let mut buf = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let mut header_end = None;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(size) => buf.extend_from_slice(&chunk[..size]),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(error) => return Err(format!("读流失败：{error}")),
+        }
+        if header_end.is_none() {
+            header_end = find_bytes(&buf, b"\r\n\r\n").map(|index| index + 4);
+            if let Some(end) = header_end {
+                let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                if !head.lines().next().unwrap_or("").contains("200") {
+                    return Err(format!(
+                        "caster 拒绝：{}",
+                        head.lines().next().unwrap_or("")
+                    ));
+                }
+                buf.drain(..end);
+            }
+        }
+        if header_end.is_some() {
+            extract_rtcm(&mut buf, &mut out);
+        }
+    }
+    if header_end.is_none() {
+        return Err("没有收到 NTRIP 响应头".into());
+    }
+    Ok(out)
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn extract_rtcm(buf: &mut Vec<u8>, out: &mut Vec<(u32, u32, u64, Vec<u8>)>) {
+    loop {
+        let Some(start) = buf.iter().position(|byte| *byte == 0xd3) else {
+            buf.clear();
+            return;
+        };
+        if start > 0 {
+            buf.drain(..start);
+        }
+        if buf.len() < 6 {
+            return;
+        }
+        let length = (((buf[1] & 0x03) as usize) << 8) | buf[2] as usize;
+        if buf.len() < length + 6 {
+            return;
+        }
+        let frame = buf[..length + 6].to_vec();
+        buf.drain(..length + 6);
+        if crc24q(&frame[..frame.len() - 3]) != frame[frame.len() - 3..] {
+            continue;
+        }
+        let message = ((frame[3] as u32) << 4) | ((frame[4] as u32) >> 4);
+        if !NTRIP_KEEP.contains(&message) {
+            continue;
+        }
+        let payload = &frame[3..frame.len() - 3];
+        let Some(sv) = bits(payload, 12, 6) else {
+            continue;
+        };
+        let Some(toe) = rtcm_toe(message, payload) else {
+            continue;
+        };
+        out.push((message, sv, toe, frame));
+    }
+}
+
+fn bits(payload: &[u8], offset: usize, width: usize) -> Option<u32> {
+    let total = payload.len() * 8;
+    if offset + width > total {
+        return None;
+    }
+    let mut value = 0u32;
+    for index in offset..offset + width {
+        let byte = payload[index / 8];
+        let bit = (byte >> (7 - (index % 8))) & 1;
+        value = (value << 1) | bit as u32;
+    }
+    Some(value)
+}
+
+fn rtcm_toe(message: u32, payload: &[u8]) -> Option<u64> {
+    match message {
+        1019 => {
+            let week = bits(payload, 18, 10)? as u64;
+            let toe = bits(payload, 288, 16)? as u64 * 16;
+            Some(week * 604_800 + toe)
+        }
+        1042 => {
+            let week = bits(payload, 18, 13)? as u64;
+            let toe = bits(payload, 299, 17)? as u64 * 8;
+            Some((week + 1356) % 1024 * 604_800 + toe)
+        }
+        1046 => {
+            let week = bits(payload, 18, 12)? as u64;
+            let toe = bits(payload, 294, 14)? as u64 * 60;
+            Some(week % 1024 * 604_800 + toe)
+        }
+        _ => Some(0),
+    }
 }
 
 fn parse_ftp_names(listing: &str) -> Vec<String> {
