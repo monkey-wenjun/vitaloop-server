@@ -11,11 +11,13 @@
 mod account;
 mod blog_health;
 mod crypto;
+mod dem;
 mod ephemeris;
 mod json;
 mod map_tiles;
 mod mcp;
 
+use dem::DemTiles;
 use ephemeris::EphemerisService;
 use map_tiles::MapTiles;
 use std::collections::HashMap;
@@ -37,6 +39,7 @@ fn body_too_large(len: usize) -> bool {
 struct State {
     data: PathBuf,
     map: MapTiles,
+    dem: DemTiles,
     ephemeris: EphemerisService,
 }
 
@@ -69,9 +72,11 @@ fn main() {
     let state = Arc::new(State {
         data,
         map: MapTiles::from_env(),
+        dem: DemTiles::from_env(),
         ephemeris: EphemerisService::from_env(),
     });
     eprintln!("地图瓦片上游：{}", state.map.upstream());
+    eprintln!("等高线 DEM 上游：{}", state.dem.upstream());
     let map_warm = Arc::clone(&state);
     thread::spawn(move || match map_warm.map.prewarm() {
         Ok(()) => eprintln!("地图目录已预热"),
@@ -184,6 +189,9 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
     }
 
     if let Some(result) = route_map(&mut stream, &req, &state.map) {
+        return result;
+    }
+    if let Some(result) = route_dem(&mut stream, &req, &state.dem) {
         return result;
     }
     if req.path == "/ephemeris.zip" {
@@ -352,6 +360,70 @@ fn parse_tile_path(path: &str) -> Option<Option<(u8, u32, u32)>> {
     let z = parts.next()?.parse::<u8>().ok();
     let x = parts.next()?.parse::<u32>().ok();
     let y = parts.next()?.strip_suffix(".mvt")?.parse::<u32>().ok();
+    if parts.next().is_some() {
+        return Some(None);
+    }
+    Some(z.zip(x).zip(y).map(|((z, x), y)| (z, x, y)))
+}
+
+/// `/contours/{z}/{x}/{y}.png` —— DEM 现算的等高线瓦片。
+fn route_dem(stream: &mut TcpStream, req: &Request, dem: &DemTiles) -> Option<std::io::Result<()>> {
+    let parsed = parse_dem_path(&req.path)?;
+    if req.method == "OPTIONS" {
+        return Some(respond_options(stream, "GET, HEAD, OPTIONS"));
+    }
+    if req.method != "GET" && req.method != "HEAD" {
+        return Some(respond_map(
+            stream,
+            405,
+            "text/plain",
+            b"method",
+            "no-cache",
+            req.method == "HEAD",
+        ));
+    }
+    let Some((z, x, y)) = parsed else {
+        return Some(respond_map(
+            stream,
+            400,
+            "text/plain",
+            b"bad contour coordinates",
+            "no-cache",
+            req.method == "HEAD",
+        ));
+    };
+    match dem.contour(z, x, y) {
+        Ok(body) => Some(respond_map(
+            stream,
+            200,
+            "image/png",
+            &body,
+            "public, max-age=604800, stale-while-revalidate=2592000",
+            req.method == "HEAD",
+        )),
+        Err(error) => {
+            eprintln!("等高线瓦片 {z}/{x}/{y} 失败：{error}");
+            Some(respond_map(
+                stream,
+                502,
+                "text/plain",
+                b"contour upstream unavailable",
+                "no-cache",
+                req.method == "HEAD",
+            ))
+        }
+    }
+}
+
+fn parse_dem_path(path: &str) -> Option<Option<(u8, u32, u32)>> {
+    let rest = path.strip_prefix("/contours/")?;
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut parts = rest.split('/');
+    let z = parts.next()?.parse::<u8>().ok();
+    let x = parts.next()?.parse::<u32>().ok();
+    let y = parts.next()?.strip_suffix(".png")?.parse::<u32>().ok();
     if parts.next().is_some() {
         return Some(None);
     }

@@ -11,6 +11,7 @@
 - **运动**：`PUT /v1/health/workouts`、`GET /v1/workouts`、`GET /v1/workouts/{id}`，按账号缓存。
 - **MCP**：`POST /mcp`，Streamable HTTP + JSON-RPC 2.0，14 个只读工具，复用账号 Bearer 会话。
 - **地图**：`/style.json`、`/style-dark.json`、`/tiles/{z}/{x}/{y}.mvt`，上游 Protomaps PMTiles，带本地缓存。
+- **等高线**：`/contours/{z}/{x}/{y}.png`，从 DEM 现算（marching squares），透明 PNG，无需第三方样式服务。
 - **博客数据**：`/blog/daily-fitness`，按 token 只读暴露一个账号的每日指标。
 - **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包。
 
@@ -67,6 +68,7 @@ docker run -d --name vitaloop-server -p 127.0.0.1:8793:8793 \
 | 环境变量 | 说明 |
 |---|---|
 | `PMTILES_URL` | 地图瓦片上游（Protomaps 月度构建），默认指向一个固定版本 |
+| `DEM_URL` | 等高线的 DEM 上游（terrarium 编码），默认 AWS `elevation-tiles-prod` |
 | `PUBLIC_BASE_URL` | 对外地址；不设则按请求 `Host` / `X-Forwarded-Proto` 推断 |
 | `VITALOOP_BLOG_TOKEN` | `/blog/daily-fitness` 的访问 token，不设则路由关闭 |
 | `VITALOOP_BLOG_ACCOUNT_ID` | 博客路由暴露的账号 id |
