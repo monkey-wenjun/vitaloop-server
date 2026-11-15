@@ -1,5 +1,7 @@
 # Vitaloop Server
 
+[English](README.en.md) | 简体中文
+
 [Vitaloop](https://github.com/monkey-wenjun/vitaloop-app)（元环健康看板）的自托管同步后端：账号体系、健康快照增量同步、运动记录、地图样式/瓦片代理，以及一个只读的 **MCP（Model Context Protocol）** 接口，让 AI 助手直接读取血压、血糖、体重、睡眠、HRV 等数据。
 
 单个静态 Rust 二进制，无第三方 crate 运行时依赖；容器基于 `scratch`。
@@ -73,6 +75,19 @@ docker run -d --name vitaloop-server -p 127.0.0.1:8793:8793 \
 ```
 
 生产环境用 Nginx/Caddy 做 HTTPS 反代到 `127.0.0.1:8793`。
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name sync.example.com;
+    # ssl_certificate ...;
+    location / {
+        proxy_pass http://127.0.0.1:8793;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
 
 ### 配置
 
