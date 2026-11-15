@@ -284,7 +284,17 @@ fn scale_decimetres(value: &mut Json) {
     }
 }
 
+fn scale_by(value: &mut Json, factor: f64) {
+    if let Json::Number(number) = value {
+        *number = (*number * factor).round();
+    }
+}
+
 fn scale_altitude_json(raw: &str, key: &str) -> Option<String> {
+    scale_altitude_json_by(raw, key, 0.1)
+}
+
+fn scale_altitude_json_by(raw: &str, key: &str, factor: f64) -> Option<String> {
     let mut value = json::parse(raw).ok()?;
     let points = match value.as_object_mut() {
         Some(items) => items
@@ -302,7 +312,7 @@ fn scale_altitude_json(raw: &str, key: &str) -> Option<String> {
             .map(|(_, value)| value)
         {
             if field.as_f64().is_some() {
-                scale_decimetres(field);
+                scale_by(field, factor);
                 changed = true;
             }
         }
