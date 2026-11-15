@@ -133,6 +133,44 @@ fn data_path(root: &Path, id: &str) -> PathBuf {
     root.join("accounts").join(id).join("health.json")
 }
 
+/// 每张表的行数，用来识别"残缺快照覆盖完整快照"这类事故。
+/// 解析失败时返回 None，调用方按不可比较处理（放行，避免误伤）。
+fn table_row_counts(snapshot: &Json) -> Option<HashMap<String, usize>> {
+    let tables = snapshot.get("tables")?.as_object()?;
+    let mut counts = HashMap::with_capacity(tables.len());
+    for (name, block) in tables {
+        let rows = block.get("rows").and_then(Json::as_array).map(<[Json]>::len)?;
+        counts.insert(name.clone(), rows);
+    }
+    Some(counts)
+}
+
+/// 明显缩水的快照必须显式 force，否则拒绝写入。
+///
+/// 2026-11-15 事故：手机重装后本地几乎为空，客户端全量上传把云端 464 条运动
+/// 覆盖成 5 条，而且没有任何提示。这里在服务端兜底：只要总量掉了 30% 以上，
+/// 或任意一张原本有 20 行以上的表掉了 50% 以上，就返回 409。
+fn snapshot_shrink(old: &Json, new: &Json) -> Option<String> {
+    let before = table_row_counts(old)?;
+    let after = table_row_counts(new)?;
+    let old_total: usize = before.values().sum();
+    let new_total: usize = after.values().sum();
+    if old_total >= 100 && new_total * 10 < old_total * 7 {
+        return Some(format!(
+            "snapshot shrunk from {old_total} to {new_total} rows; resend with force=1 to overwrite"
+        ));
+    }
+    for (table, old_rows) in &before {
+        let new_rows = after.get(table).copied().unwrap_or(0);
+        if *old_rows >= 20 && new_rows * 2 < *old_rows {
+            return Some(format!(
+                "table {table} shrunk from {old_rows} to {new_rows} rows; resend with force=1 to overwrite"
+            ));
+        }
+    }
+    None
+}
+
 fn workouts_path(root: &Path, id: &str) -> PathBuf {
     root.join("accounts").join(id).join("workouts.json")
 }
@@ -894,6 +932,25 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             let Some(snapshot) = decode_snapshot(req.body.clone()) else {
                 return Some((400, "text/plain", b"invalid gzip snapshot".to_vec()));
             };
+            // 残缺快照不许覆盖完整快照：客户端重装/清数据后会把本地空库全量
+            // 上传，这里按行数骤降识别并拒绝，除非显式带 force=1。
+            let force = query.split('&').any(|part| part == "force=1");
+            if !force {
+                let old_raw = decode_snapshot(fs::read(&file).unwrap_or_default());
+                let parsed = old_raw
+                    .and_then(|raw| String::from_utf8(raw).ok())
+                    .and_then(|text| json::parse(&text).ok())
+                    .zip(
+                        std::str::from_utf8(&snapshot)
+                            .ok()
+                            .and_then(|text| json::parse(text).ok()),
+                    );
+                if let Some((old, new)) = parsed {
+                    if let Some(reason) = snapshot_shrink(&old, &new) {
+                        return Some((409, "text/plain", reason.into_bytes()));
+                    }
+                }
+            }
             let result = fs::write(&tmp, snapshot).and_then(|_| fs::rename(&tmp, &file));
             match result {
                 Ok(_) => {
@@ -1333,6 +1390,85 @@ mod tests {
     fn account_id_is_stable_and_email_is_case_insensitive() {
         assert_eq!(account_id("Hi@Example.com"), account_id("hi@example.com"));
         assert_ne!(account_id("a@example.com"), account_id("b@example.com"));
+    }
+
+    fn put_health(root: &Path, token: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            format!("Bearer {token}"),
+        );
+        let req = Request {
+            method: "PUT".into(),
+            path: path.into(),
+            headers,
+            body: body.to_vec(),
+        };
+        let (code, _, body) = route(&req, root).unwrap();
+        (code, body)
+    }
+
+    #[test]
+    fn shrunk_snapshot_is_rejected_unless_forced() {
+        let root = dir();
+        let email = "guard@example.com";
+        let (code, _, body) = register(&root, format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes());
+        assert_eq!(code, 201);
+        let reply = json::parse(std::str::from_utf8(&body).unwrap()).unwrap();
+        let token = reply.get("token").and_then(Json::as_str).unwrap().to_string();
+
+        let full: Vec<String> = (0..100).map(|i| format!(r#"[{i},60]"#)).collect();
+        let full = format!(
+            r#"{{"version":1,"tables":{{"heart_rate_points":{{"columns":["ts_ms","bpm"],"rows":[{}]}}}}}}"#,
+            full.join(",")
+        );
+        assert_eq!(put_health(&root, &token, "/v1/health/data", full.as_bytes()).0, 200);
+
+        let shrunk = r#"{"version":1,"tables":{"heart_rate_points":{"columns":["ts_ms","bpm"],"rows":[[1,60]]}}}"#;
+        let (code, body) = put_health(&root, &token, "/v1/health/data", shrunk.as_bytes());
+        assert_eq!(code, 409, "{}", String::from_utf8_lossy(&body));
+        // 云端旧快照必须原封不动。
+        let stored = fs::read(data_path(&root, &account_id(email))).unwrap();
+        assert_eq!(stored, full.as_bytes());
+
+        // 显式 force 时才允许覆盖（比如用户真的清空重来）。
+        assert_eq!(
+            put_health(&root, &token, "/v1/health/data?force=1", shrunk.as_bytes()).0,
+            200
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gzip_snapshot_is_compared_before_write() {
+        let root = dir();
+        let email = "gzip-guard@example.com";
+        let (code, _, body) = register(&root, format!(r#"{{"email":"{email}","password":"password123"}}"#).as_bytes());
+        assert_eq!(code, 201);
+        let reply = json::parse(std::str::from_utf8(&body).unwrap()).unwrap();
+        let token = reply.get("token").and_then(Json::as_str).unwrap().to_string();
+
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write;
+        let rows: Vec<String> = (0..50).map(|i| format!(r#"[{i},70]"#)).collect();
+        enc.write_all(
+            format!(
+                r#"{{"version":1,"tables":{{"heart_rate_points":{{"columns":["ts_ms","bpm"],"rows":[{}]}}}}}}"#,
+                rows.join(",")
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let gz = enc.finish().unwrap();
+        assert_eq!(put_health(&root, &token, "/v1/health/data", &gz).0, 200);
+
+        // 旧基线是 gzip，新快照是明文且骤减：仍要识别出来。
+        let shrunk = r#"{"version":1,"tables":{"heart_rate_points":{"columns":["ts_ms","bpm"],"rows":[[1,60]]}}}"#;
+        assert_eq!(
+            put_health(&root, &token, "/v1/health/data", shrunk.as_bytes()).0,
+            409
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
