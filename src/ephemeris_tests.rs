@@ -237,3 +237,33 @@ fn ntrip_extract_drops_corrupted_frames() {
     extract_rtcm(&mut buf, &mut out);
     assert!(out.is_empty());
 }
+
+#[test]
+fn ntrip_base64_matches_rfc4648_vectors() {
+    fn decode(input: &str) -> Vec<u8> {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = Vec::new();
+        let mut acc = 0u32;
+        let mut bits = 0;
+        for ch in input.bytes().filter(|b| *b != b'=') {
+            let value = TABLE.iter().position(|c| *c == ch).unwrap() as u32;
+            acc = (acc << 6) | value;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+            }
+        }
+        out
+    }
+    for sample in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "a@b.c:x"] {
+        let encoded = base64(sample);
+        assert_eq!(encoded.len() % 4, 0, "长度必须是 4 的倍数");
+        assert_eq!(decode(&encoded), sample.as_bytes());
+    }
+    // 整组（6 字节）不应带填充；2 字节输入补一个 '='，1 字节补两个。
+    assert!(!base64("foobar").contains('='));
+    assert!(base64("fo").ends_with('='));
+    assert!(base64("f").ends_with("=="));
+}

@@ -20,17 +20,20 @@ use ureq::Agent;
 const DEFAULT_UPSTREAM: &str = "https://igs.bkg.bund.de/root_ftp/IGS/BRDC";
 /// BKG / WHU 在阿里云（47）上不可达时，退回公开 NTRIP caster 抓当前 RTCM
 /// 广播星历帧（1019/1020/1042/1046）。纯 std 实现，不引入新依赖。
-const DEFAULT_NTRIP: &str = "rtk2go.com:2101";
-const NTRIP_MOUNTS: [&str; 6] = [
-    "AGROORSOLIC",
-    "AR-NET_Siniarzewo",
-    "backbog",
-    "Balding",
-    "BallyAgopen",
-    "AZU1_RTCM3",
-];
+///
+/// 用 Centipede 而不是 rtk2go：rtk2go 的 SNIP 会给所有流注入同一份静态 nav，
+/// 2026-11-07 实测滞后约 140 小时，拿它当源等于给手表喂过期星历。
+const DEFAULT_NTRIP: &str = "caster.centipede.fr:2101";
+/// sourcetable 取不到时的兜底站点。
+const NTRIP_MOUNTS: [&str; 5] = ["1CEN", "1234", "ABBEV", "35JF", "5640"];
+/// 并行抓取的站点数：多站点互补可见卫星，够数就提前收工。
+const NTRIP_MAX_MOUNTS: usize = 10;
 const NTRIP_KEEP: [u32; 4] = [1019, 1020, 1042, 1046];
-const NTRIP_MIN: [(u32, usize); 4] = [(1019, 16), (1020, 8), (1042, 16), (1046, 8)];
+/// 理想数量（对齐 BRDC 生成时的门槛）。达不到只告警，不拒绝——少几颗
+/// BDS/GAL 仍然能帮手表更快定位，总比整份星历都拿不到强。
+const NTRIP_IDEAL: [(u32, usize); 4] = [(1019, 16), (1020, 8), (1042, 16), (1046, 8)];
+/// 低于这个数就没有使用价值，直接判失败。
+const NTRIP_MIN: [(u32, usize); 4] = [(1019, 8), (1020, 4), (1042, 6), (1046, 4)];
 const GPS_EPOCH_UNIX: f64 = 315_964_800.0;
 const GPS_TO_BDS_WEEK: u32 = 1356;
 const GPS_TO_GST_WEEK: u32 = 1024;
@@ -261,10 +264,36 @@ impl EphemerisService {
             .split_once(':')
             .unwrap_or((self.ntrip.as_str(), "2101"));
         let port = port.parse::<u16>().unwrap_or(2101);
+        // 站点表来自 caster 自己的 sourcetable：硬编码站点一旦下线/改频就会
+        // 悄悄退化成「只有几颗卫星」。取不到时才用兜底列表。
+        let mounts = ntrip_mounts(host, port, self.ntrip_auth.as_deref())
+            .unwrap_or_else(|error| {
+                eprintln!("NTRIP sourcetable 不可用（{error}），使用兜底站点");
+                NTRIP_MOUNTS.iter().map(|m| m.to_string()).collect()
+            });
+        if mounts.is_empty() {
+            return Err("NTRIP sourcetable 里没有多系统站点".into());
+        }
         let mut union: BTreeMap<u32, BTreeMap<u32, (u64, Vec<u8>)>> = BTreeMap::new();
         let mut errors = Vec::new();
-        for mount in NTRIP_MOUNTS {
-            match ntrip_grab(host, port, mount, 30, self.ntrip_auth.as_deref()) {
+        // 每个流要连着听十几秒才可能凑齐一整套广播星历，串行 10 个站就是
+        // 几分钟，手表那边早超时了。并行抓，谁先给够就先合。
+        let mut handles = Vec::new();
+        for mount in mounts.iter().take(NTRIP_MAX_MOUNTS) {
+            let mount = mount.clone();
+            let host = host.to_string();
+            let auth = self.ntrip_auth.clone();
+            handles.push(std::thread::spawn(move || {
+                let result = ntrip_grab(&host, port, &mount, 18, auth.as_deref());
+                (mount, result)
+            }));
+        }
+        for handle in handles {
+            let Ok((mount, result)) = handle.join() else {
+                errors.push("抓取线程崩溃".to_string());
+                continue;
+            };
+            match result {
                 Ok(frames) => {
                     for (message, sv, toe, frame) in frames {
                         let table = union.entry(message).or_default();
@@ -277,6 +306,24 @@ impl EphemerisService {
                 Err(error) => errors.push(format!("{mount}: {error}")),
             }
         }
+        // 只留新鲜的 GPS 星历：过期帧会让手表算错位置，宁可少几颗。
+        // 1019 的周号只有 10 bit（19.6 年回绕），当前时间必须按同一周期取模，
+        // 否则现在（GPS 周 ~2400）会被算成比 toe 早 1200 多周而全部丢弃。
+        let gps_cycle = 1024.0 * 604_800.0;
+        let now_gps = (now_unix() - GPS_EPOCH_UNIX) % gps_cycle;
+        if let Some(table) = union.get_mut(&1019) {
+            table.retain(|_, (toe, _)| {
+                // 差值折回 [-半个周期, 半个周期]，避免周期边界上把刚发的帧
+                // 当成"晚了 19.6 年"。
+                let mut age = (now_gps - (*toe as f64 % gps_cycle)) % gps_cycle;
+                if age > gps_cycle / 2.0 {
+                    age -= gps_cycle;
+                } else if age < -gps_cycle / 2.0 {
+                    age += gps_cycle;
+                }
+                (-FUTURE_AGE_HOURS * 3600.0..=MAX_AGE_HOURS * 3600.0).contains(&age)
+            });
+        }
         if let Some(missing) = NTRIP_MIN
             .iter()
             .find(|(message, need)| union.get(message).map(|t| t.len()).unwrap_or(0) < *need)
@@ -288,6 +335,12 @@ impl EphemerisService {
                 missing.1,
                 errors.join("; ")
             ));
+        }
+        for (message, ideal) in NTRIP_IDEAL {
+            let count = union.get(&message).map(|t| t.len()).unwrap_or(0);
+            if count < ideal {
+                eprintln!("NTRIP {} 只有 {} 颗（理想 {}），继续使用", message, count, ideal);
+            }
         }
         let mut rtcm = Vec::new();
         for message in NTRIP_KEEP {
@@ -824,7 +877,7 @@ fn ntrip_grab(
         .unwrap_or_default();
     let request = format!(
         "GET /{mount} HTTP/1.0\r\nHost: {host}\r\nNtrip-Version: Ntrip/2.0\r\n\
-         User-Agent: NTRIP vitaloop-eph/1.0\r\n{auth_header}Connection: close\r\n\r\n"
+         User-Agent: NTRIP vitaloop-eph/1.0\r\n{auth_header}\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -877,6 +930,103 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// 从 caster 的 sourcetable 里挑出同时播发 1019/1020/1042/1046 的站点。
+/// 返回顺序按表里的原顺序，调用方再截断并行数。
+fn ntrip_mounts(host: &str, port: u16, auth: Option<&str>) -> Result<Vec<String>, String> {
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect((host, port))
+        .map_err(|error| format!("连接 {host}:{port} 失败：{error}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(15))).ok();
+    let auth_header = auth
+        .map(|value| format!("Authorization: Basic {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET / HTTP/1.0\r\nHost: {host}\r\nNtrip-Version: Ntrip/2.0\r\n\
+         User-Agent: NTRIP vitaloop-eph/1.0\r\n{auth_header}\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("发送 sourcetable 请求失败：{error}"))?;
+
+    let mut body = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if Instant::now() >= deadline || body.len() > 4 * 1024 * 1024 {
+            break;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(size) => {
+                body.extend_from_slice(&chunk[..size]);
+                if find_bytes(&body, b"ENDSOURCETABLE").is_some() {
+                    break;
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(error) => return Err(format!("读 sourcetable 失败：{error}")),
+        }
+    }
+    let text = String::from_utf8_lossy(&body).to_string();
+    let mut mounts = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("STR;") else {
+            continue;
+        };
+        let fields: Vec<&str> = rest.split(';').collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let (name, format, messages) = (fields[0].trim(), fields[2], fields[3]);
+        if name.is_empty() || !format.contains("RTCM") {
+            continue;
+        }
+        // 必须同时播发 GPS/GLONASS/BDS/Galileo 的广播星历。
+        if ["1019", "1020", "1042", "1046"]
+            .iter()
+            .all(|needle| messages.split(',').any(|item| item == *needle))
+            && !mounts.iter().any(|item| item == name)
+        {
+            mounts.push(name.to_string());
+        }
+    }
+    Ok(mounts)
+}
+
+/// 标准 Base64（NTRIP Basic 认证用）。项目零第三方依赖，这里只处理
+/// `user:pass` 这种短 ASCII 串。
+fn base64(input: &str) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(triple >> 18) as usize & 0x3f] as char);
+        out.push(TABLE[(triple >> 12) as usize & 0x3f] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(triple >> 6) as usize & 0x3f] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[triple as usize & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 fn extract_rtcm(buf: &mut Vec<u8>, out: &mut Vec<(u32, u32, u64, Vec<u8>)>) {
