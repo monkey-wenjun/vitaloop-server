@@ -154,6 +154,32 @@ fn zip_contains_local_agnss_only() {
     assert!(zip
         .windows(4)
         .any(|window| window == [0x50, 0x4b, 0x05, 0x06]));
+    // 严格解析器要求 EOCD 是完整 22 字节：4 字节签名 + 18 字节字段。
+    let eocd = zip
+        .windows(4)
+        .position(|window| window == [0x50, 0x4b, 0x05, 0x06])
+        .expect("missing eocd");
+    assert_eq!(zip.len() - eocd, 22);
+    assert_eq!(
+        u16::from_le_bytes([zip[eocd + 10], zip[eocd + 11]]),
+        4,
+        "central directory entry count"
+    );
+    // 中央目录必须紧挨在 EOCD 前面，且大小字段与偏移一致。
+    let central_offset = u32::from_le_bytes([
+        zip[eocd + 16],
+        zip[eocd + 17],
+        zip[eocd + 18],
+        zip[eocd + 19],
+    ]) as usize;
+    let central_size = u32::from_le_bytes([
+        zip[eocd + 12],
+        zip[eocd + 13],
+        zip[eocd + 14],
+        zip[eocd + 15],
+    ]) as usize;
+    assert_eq!(central_offset + central_size, eocd);
+    assert_eq!(&zip[central_offset..central_offset + 4], &[0x50, 0x4b, 0x01, 0x02]);
 }
 
 #[test]

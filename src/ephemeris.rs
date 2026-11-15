@@ -1430,24 +1430,32 @@ fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
         ("agnss/HW_AGNSS_RTCM_33", rtcm.to_vec()),
         ("agnss/HW_AGNSS", gz_data),
     ];
+    // 先写全部本地文件头 + 数据，再集中写中央目录，最后写 EOCD。
+    // 之前把中央目录条目夹在每个本地条目后面，且 EOCD 少了注释长度字段，
+    // 严格解析器（unzip / Python zipfile）会直接报「找不到中央目录」。
     let mut out = Vec::new();
-    let entry_count = files.len();
-    for (name, data) in files {
-        write_zip_entry(&mut out, name, &data, generated_at);
+    let mut central = Vec::new();
+    for (name, data) in &files {
+        let offset = out.len() as u32;
+        write_zip_local_entry(&mut out, name, data, generated_at);
+        write_zip_central_entry(&mut central, name, data, generated_at, offset);
     }
     let central_directory_offset = out.len() as u32;
+    let central_directory_size = central.len() as u32;
+    out.extend_from_slice(&central);
+    let entry_count = files.len() as u16;
     out.extend_from_slice(&0x06054b50u32.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(entry_count as u16).to_le_bytes());
-    out.extend_from_slice(&(entry_count as u16).to_le_bytes());
+    out.extend_from_slice(&entry_count.to_le_bytes());
+    out.extend_from_slice(&entry_count.to_le_bytes());
+    out.extend_from_slice(&central_directory_size.to_le_bytes());
     out.extend_from_slice(&central_directory_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out
 }
 
-fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64) {
-    let crc = crc32(data);
-    let offset = out.len() as u32;
+fn zip_dos_stamp(generated_at: u64) -> (u16, u16) {
     let parts = chrono_parts(generated_at as f64);
     let year = parts.0.max(1980) as u32;
     let month = if parts.0 < 1980 { 1 } else { parts.1 };
@@ -1457,12 +1465,18 @@ fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64
     let second = if parts.0 < 1980 { 0 } else { parts.5 };
     let dos_date = ((year - 1980) << 9) | (month << 5) | day;
     let dos_time = (hour << 11) | (minute << 5) | (second / 2);
+    (dos_time as u16, dos_date as u16)
+}
+
+fn write_zip_local_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64) {
+    let crc = crc32(data);
+    let (dos_time, dos_date) = zip_dos_stamp(generated_at);
     out.extend_from_slice(&0x04034b50u32.to_le_bytes());
     out.extend_from_slice(&20u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(dos_time as u16).to_le_bytes());
-    out.extend_from_slice(&(dos_date as u16).to_le_bytes());
+    out.extend_from_slice(&dos_time.to_le_bytes());
+    out.extend_from_slice(&dos_date.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -1470,24 +1484,35 @@ fn write_zip_entry(out: &mut Vec<u8>, name: &str, data: &[u8], generated_at: u64
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(data);
-    out.extend_from_slice(&0x02014b50u32.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&(dos_time as u16).to_le_bytes());
-    out.extend_from_slice(&(dos_date as u16).to_le_bytes());
-    out.extend_from_slice(&crc.to_le_bytes());
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&offset.to_le_bytes());
-    out.extend_from_slice(name.as_bytes());
+}
+
+fn write_zip_central_entry(
+    central: &mut Vec<u8>,
+    name: &str,
+    data: &[u8],
+    generated_at: u64,
+    offset: u32,
+) {
+    let crc = crc32(data);
+    let (dos_time, dos_date) = zip_dos_stamp(generated_at);
+    central.extend_from_slice(&0x02014b50u32.to_le_bytes());
+    central.extend_from_slice(&20u16.to_le_bytes());
+    central.extend_from_slice(&20u16.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&dos_time.to_le_bytes());
+    central.extend_from_slice(&dos_date.to_le_bytes());
+    central.extend_from_slice(&crc.to_le_bytes());
+    central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&0u16.to_le_bytes());
+    central.extend_from_slice(&0u32.to_le_bytes());
+    central.extend_from_slice(&offset.to_le_bytes());
+    central.extend_from_slice(name.as_bytes());
 }
 
 fn crc32(data: &[u8]) -> u32 {
