@@ -370,11 +370,11 @@ fn json_string(body: &[u8], key: &str) -> Option<String> {
         i += 1;
         let mut out = String::new();
         while i < bytes.len() {
-            let c = bytes[i] as char;
-            if c == '"' {
+            let c = *text[i..].as_bytes().first()?;
+            if c == b'"' {
                 return Some(out);
             }
-            if c == '\\' {
+            if c == b'\\' {
                 i += 1;
                 if i >= bytes.len() {
                     return None;
@@ -401,8 +401,9 @@ fn json_string(body: &[u8], key: &str) -> Option<String> {
                 i += 1;
                 continue;
             }
-            out.push(c);
-            i += 1;
+            let ch = text[i..].chars().next()?;
+            out.push(ch);
+            i += ch.len_utf8();
         }
         return None;
     }
