@@ -889,7 +889,10 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             }
             // 先写临时文件再原子改名：进程被杀/磁盘满时旧快照仍然完整。
             let tmp = file.with_extension("json.tmp");
-            let result = fs::write(&tmp, &req.body).and_then(|_| fs::rename(&tmp, &file));
+            let Some(snapshot) = decode_snapshot(req.body.clone()) else {
+                return Some((400, "text/plain", b"invalid gzip snapshot".to_vec()));
+            };
+            let result = fs::write(&tmp, snapshot).and_then(|_| fs::rename(&tmp, &file));
             match result {
                 Ok(_) => {
                     // 全量快照已经包含所有增量，旧补丁必须清空。
