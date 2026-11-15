@@ -18,6 +18,8 @@ use std::time::Duration;
 
 const TILE: usize = 256;
 const MAX_CACHE_ENTRIES: usize = 4096;
+/// 原始 DEM PNG 比等高线大（约 100 KB），单独限一个更小的上限。
+const MAX_DEM_CACHE_ENTRIES: usize = 768;
 /// AWS terrarium 最高只到 z15；再往里放大由 MapLibre 自己 overzoom。
 const MAX_ZOOM: u8 = 15;
 const DEFAULT_UPSTREAM: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
@@ -41,6 +43,7 @@ pub struct DemTiles {
     upstream: String,
     agent: ureq::Agent,
     cache: Mutex<HashMap<(u8, u32, u32), CacheEntry>>,
+    dem_cache: Mutex<HashMap<(u8, u32, u32), Arc<Vec<u8>>>>,
     tick: Mutex<u64>,
 }
 
@@ -59,6 +62,7 @@ impl DemTiles {
             upstream,
             agent: config.into(),
             cache: Mutex::new(HashMap::new()),
+            dem_cache: Mutex::new(HashMap::new()),
             tick: Mutex::new(0),
         }
     }
@@ -77,7 +81,7 @@ impl DemTiles {
             return Err(format!("zoom {z} exceeds {MAX_ZOOM}"));
         }
 
-        let png = self.fetch_dem(z, x, y)?;
+        let png = self.dem_png(z, x, y)?;
         let elevation = decode_terrarium(&png)?;
         let rgba = draw_contours(&elevation, interval_for_zoom(z));
         let data = Arc::new(encode_rgba_png(TILE as u32, TILE as u32, &rgba));
@@ -102,6 +106,28 @@ impl DemTiles {
                 used,
             },
         );
+        Ok(data)
+    }
+
+    /// 原始 terrarium PNG。山体阴影（`/dem`）和等高线共用这一份缓存，
+    /// 同一块地形只从上游拉一次。
+    pub fn dem_png(&self, z: u8, x: u32, y: u32) -> Result<Arc<Vec<u8>>, String> {
+        if z > MAX_ZOOM {
+            return Err(format!("zoom {z} exceeds {MAX_ZOOM}"));
+        }
+        let key = (z, x, y);
+        if let Some(hit) = self.dem_cache.lock().unwrap().get(&key) {
+            return Ok(Arc::clone(hit));
+        }
+        let data = Arc::new(self.fetch_dem(z, x, y)?);
+        let mut cache = self.dem_cache.lock().unwrap();
+        if cache.len() >= MAX_DEM_CACHE_ENTRIES {
+            // 这个缓存只做去重，简单丢掉任意一条即可。
+            if let Some(oldest) = cache.keys().next().copied() {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(key, Arc::clone(&data));
         Ok(data)
     }
 

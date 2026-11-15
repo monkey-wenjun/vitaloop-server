@@ -366,9 +366,16 @@ fn parse_tile_path(path: &str) -> Option<Option<(u8, u32, u32)>> {
     Some(z.zip(x).zip(y).map(|((z, x), y)| (z, x, y)))
 }
 
-/// `/contours/{z}/{x}/{y}.png` —— DEM 现算的等高线瓦片。
+enum DemRoute {
+    /// `/dem/{z}/{x}/{y}.png` —— 原始 terrarium PNG（山体阴影用）。
+    Dem,
+    /// `/contours/{z}/{x}/{y}.png` —— DEM 现算的等高线瓦片。
+    Contour,
+}
+
+/// `/dem/...` 与 `/contours/...` 共用同一个 DEM 缓存。
 fn route_dem(stream: &mut TcpStream, req: &Request, dem: &DemTiles) -> Option<std::io::Result<()>> {
-    let parsed = parse_dem_path(&req.path)?;
+    let (kind, parsed) = parse_dem_path(&req.path)?;
     if req.method == "OPTIONS" {
         return Some(respond_options(stream, "GET, HEAD, OPTIONS"));
     }
@@ -387,12 +394,16 @@ fn route_dem(stream: &mut TcpStream, req: &Request, dem: &DemTiles) -> Option<st
             stream,
             400,
             "text/plain",
-            b"bad contour coordinates",
+            b"bad dem coordinates",
             "no-cache",
             req.method == "HEAD",
         ));
     };
-    match dem.contour(z, x, y) {
+    let result = match kind {
+        DemRoute::Dem => dem.dem_png(z, x, y),
+        DemRoute::Contour => dem.contour(z, x, y),
+    };
+    match result {
         Ok(body) => Some(respond_map(
             stream,
             200,
@@ -402,12 +413,12 @@ fn route_dem(stream: &mut TcpStream, req: &Request, dem: &DemTiles) -> Option<st
             req.method == "HEAD",
         )),
         Err(error) => {
-            eprintln!("等高线瓦片 {z}/{x}/{y} 失败：{error}");
+            eprintln!("DEM 瓦片 {z}/{x}/{y} 失败：{error}");
             Some(respond_map(
                 stream,
                 502,
                 "text/plain",
-                b"contour upstream unavailable",
+                b"dem upstream unavailable",
                 "no-cache",
                 req.method == "HEAD",
             ))
@@ -415,8 +426,12 @@ fn route_dem(stream: &mut TcpStream, req: &Request, dem: &DemTiles) -> Option<st
     }
 }
 
-fn parse_dem_path(path: &str) -> Option<Option<(u8, u32, u32)>> {
-    let rest = path.strip_prefix("/contours/")?;
+fn parse_dem_path(path: &str) -> Option<(DemRoute, Option<(u8, u32, u32)>)> {
+    let (kind, rest) = if let Some(rest) = path.strip_prefix("/contours/") {
+        (DemRoute::Contour, rest)
+    } else {
+        (DemRoute::Dem, path.strip_prefix("/dem/")?)
+    };
     if !rest.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
@@ -425,9 +440,9 @@ fn parse_dem_path(path: &str) -> Option<Option<(u8, u32, u32)>> {
     let x = parts.next()?.parse::<u32>().ok();
     let y = parts.next()?.strip_suffix(".png")?.parse::<u32>().ok();
     if parts.next().is_some() {
-        return Some(None);
+        return Some((kind, None));
     }
-    Some(z.zip(x).zip(y).map(|((z, x), y)| (z, x, y)))
+    Some((kind, z.zip(x).zip(y).map(|((z, x), y)| (z, x, y))))
 }
 
 fn respond_options(stream: &mut TcpStream, methods: &str) -> std::io::Result<()> {
