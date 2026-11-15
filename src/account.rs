@@ -206,6 +206,234 @@ fn key_of(row: &[Json], key_index: &[usize]) -> Option<String> {
     Some(Json::Array(values).render())
 }
 
+const ALTITUDE_UNIT_KEY: &str = "altitude_unit_v";
+const ALTITUDE_UNIT_VERSION: &str = "14";
+
+fn altitude_marker(snapshot: &Json) -> Option<String> {
+    let settings = snapshot.get("tables")?.get("settings")?;
+    let columns: Vec<&str> = settings
+        .get("columns")?
+        .as_array()?
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    let key_index = columns.iter().position(|c| *c == "key")?;
+    let value_index = columns.iter().position(|c| *c == "value")?;
+    settings
+        .get("rows")?
+        .as_array()?
+        .iter()
+        .filter_map(Json::as_array)
+        .find_map(|row| {
+            (row.get(key_index)?.as_str()? == ALTITUDE_UNIT_KEY)
+                .then(|| row.get(value_index).and_then(Json::as_str).map(str::to_string))
+                .flatten()
+        })
+}
+
+fn set_altitude_marker(snapshot: &mut Json) {
+    let Some(tables) = snapshot
+        .as_object_mut()
+        .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
+        .map(|(_, value)| value)
+    else {
+        return;
+    };
+    let Some(settings) = tables
+        .as_object_mut()
+        .and_then(|items| items.iter_mut().find(|(key, _)| key == "settings"))
+        .map(|(_, value)| value)
+    else {
+        return;
+    };
+    let Some(columns) = settings
+        .get("columns")
+        .and_then(Json::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+    else {
+        return;
+    };
+    let (Some(key_index), Some(value_index)) = (
+        columns.iter().position(|c| *c == "key"),
+        columns.iter().position(|c| *c == "value"),
+    ) else {
+        return;
+    };
+    let Some(object) = settings.as_object_mut() else {
+        return;
+    };
+    let Some(rows) = object
+        .iter_mut()
+        .find(|(key, _)| key == "rows")
+        .map(|(_, value)| value)
+        .and_then(Json::as_array_mut)
+    else {
+        return;
+    };
+    let mut width = columns.len();
+    for row in rows.iter() {
+        if let Some(values) = row.as_array() {
+            width = width.max(values.len());
+        }
+    }
+    let mut row = vec![Json::Null; width];
+    row[key_index] = Json::String(ALTITUDE_UNIT_KEY.into());
+    row[value_index] = Json::String(ALTITUDE_UNIT_VERSION.into());
+    let existing = rows.iter_mut().find(|item| {
+        item.as_array()
+            .and_then(|values| values.get(key_index))
+            .and_then(Json::as_str)
+            == Some(ALTITUDE_UNIT_KEY)
+    });
+    match existing {
+        Some(item) => *item = Json::Array(row),
+        None => rows.push(Json::Array(row)),
+    }
+}
+
+fn scale_decimetres(value: &mut Json) {
+    if let Json::Number(number) = value {
+        *number = (*number / 10.0).round();
+    }
+}
+
+fn scale_altitude_json(raw: &str, key: &str) -> Option<String> {
+    let mut value = json::parse(raw).ok()?;
+    let points = match value.as_object_mut() {
+        Some(items) => items
+            .iter_mut()
+            .find(|(name, _)| name == "trkpt")
+            .map(|(_, value)| value)
+            .and_then(Json::as_array_mut)?,
+        None => value.as_array_mut()?,
+    };
+    let mut changed = false;
+    for point in points.iter_mut() {
+        if let Some(field) = point
+            .as_object_mut()
+            .and_then(|items| items.iter_mut().find(|(name, _)| name == key))
+            .map(|(_, value)| value)
+        {
+            if field.as_f64().is_some() {
+                scale_decimetres(field);
+                changed = true;
+            }
+        }
+    }
+    changed.then(|| value.render())
+}
+
+/// 旧版客户端把手表分米当米上传。服务端入库时按行修正，避免旧包再次
+/// 把已修正的云端数据覆盖回放大 10 倍的值。
+fn normalize_watch_rows(table: &mut Json) -> usize {
+    let Some(columns) = table
+        .get("columns")
+        .and_then(Json::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+    else {
+        return 0;
+    };
+    let index = |name: &str| columns.iter().position(|c| c == name);
+    let Some(id_index) = index("id") else {
+        return 0;
+    };
+    let Some(object) = table.as_object_mut() else {
+        return 0;
+    };
+    let Some(rows) = object
+        .iter_mut()
+        .find(|(key, _)| key == "rows")
+        .map(|(_, value)| value)
+        .and_then(Json::as_array_mut)
+    else {
+        return 0;
+    };
+    let mut changed = 0;
+    for row in rows.iter_mut() {
+        let Some(values) = row.as_array_mut() else {
+            continue;
+        };
+        let Some(id) = values.get(id_index).and_then(Json::as_str) else {
+            continue;
+        };
+        if !id.starts_with("watch-") {
+            continue;
+        }
+        for name in [
+            "elevation_gain",
+            "elevation_loss",
+            "max_altitude",
+            "min_altitude",
+        ] {
+            if let Some(field) = index(name).and_then(|i| values.get_mut(i)) {
+                scale_decimetres(field);
+            }
+        }
+        for (name, key) in [("altitude_json", "alt"), ("detail_json", "altitude")] {
+            let Some(field) = index(name).and_then(|i| values.get_mut(i)) else {
+                continue;
+            };
+            let Some(raw) = field.as_str().map(str::to_string) else {
+                continue;
+            };
+            if let Some(fixed) = scale_altitude_json(&raw, key) {
+                *field = Json::String(fixed);
+            }
+        }
+        changed += 1;
+    }
+    changed
+}
+
+fn normalize_snapshot_altitudes(snapshot: &mut Json) -> usize {
+    let Some(workouts) = snapshot
+        .as_object_mut()
+        .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
+        .map(|(_, value)| value)
+        .and_then(Json::as_object_mut)
+        .and_then(|items| items.iter_mut().find(|(key, _)| key == "workouts"))
+        .map(|(_, value)| value)
+    else {
+        return 0;
+    };
+    normalize_watch_rows(workouts)
+}
+
+fn normalize_delta_altitudes(delta: &mut Json) -> usize {
+    let Some(tables) = delta
+        .as_object_mut()
+        .and_then(|items| items.iter_mut().find(|(key, _)| key == "tables"))
+        .map(|(_, value)| value)
+        .and_then(Json::as_object_mut)
+    else {
+        return 0;
+    };
+    tables
+        .iter_mut()
+        .filter(|(name, _)| name == "workouts")
+        .map(|(_, table)| normalize_watch_rows(table))
+        .sum()
+}
+
+fn client_reports_metres(req: &Request) -> bool {
+    req.headers
+        .get("x-vitaloop-altitude-unit")
+        .map(|value| value.trim() == ALTITUDE_UNIT_VERSION)
+        .unwrap_or(false)
+}
+
 /// 把一个增量块合并进当前快照。客户端按主键回表取完整行，所以这里
 /// 只需要按 key 做替换/追加，删除则按 key 移除。
 fn apply_delta(base: &mut Json, delta: &Json) -> Result<usize, String> {
@@ -932,6 +1160,18 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             let Some(snapshot) = decode_snapshot(req.body.clone()) else {
                 return Some((400, "text/plain", b"invalid gzip snapshot".to_vec()));
             };
+            let mut snapshot = match String::from_utf8(snapshot)
+                .ok()
+                .and_then(|text| json::parse(&text).ok())
+            {
+                Some(value) => value,
+                None => return Some((400, "text/plain", b"invalid snapshot json".to_vec())),
+            };
+            if !client_reports_metres(req) {
+                normalize_snapshot_altitudes(&mut snapshot);
+                set_altitude_marker(&mut snapshot);
+            }
+            let snapshot = snapshot.render().into_bytes();
             // 残缺快照不许覆盖完整快照：客户端重装/清数据后会把本地空库全量
             // 上传，这里按行数骤降识别并拒绝，除非显式带 force=1。
             let force = query.split('&').any(|part| part == "force=1");
@@ -941,9 +1181,9 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                     .and_then(|raw| String::from_utf8(raw).ok())
                     .and_then(|text| json::parse(&text).ok())
                     .zip(
-                        std::str::from_utf8(&snapshot)
+                        String::from_utf8(snapshot.clone())
                             .ok()
-                            .and_then(|text| json::parse(text).ok()),
+                            .and_then(|text| json::parse(&text).ok()),
                     );
                 if let Some((old, new)) = parsed {
                     if let Some(reason) = snapshot_shrink(&old, &new) {
@@ -989,6 +1229,11 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             if value.get("tables").and_then(Json::as_object).is_none() {
                 return Some((400, "text/plain", b"missing delta tables".to_vec()));
             }
+            let mut value = value;
+            if !client_reports_metres(req) {
+                normalize_delta_altitudes(&mut value);
+            }
+            let text = value.render();
             let patches = patches_path(root, &id);
             let current_size = fs::metadata(&patches).map(|m| m.len()).unwrap_or(0);
             if current_size > 8 * 1024 * 1024 {

@@ -44,6 +44,13 @@ impl Json {
         }
     }
 
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Json>> {
+        match self {
+            Json::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
     pub fn as_object(&self) -> Option<&[(String, Json)]> {
         match self {
             Json::Object(items) => Some(items),
