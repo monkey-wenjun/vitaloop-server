@@ -1,7 +1,27 @@
 # 构建阶段：静态 musl 二进制，运行阶段仍是 scratch。
-FROM rust:1-slim AS builder
+FROM docker.m.daocloud.io/library/rust:1-slim AS builder
 
-RUN apt-get update \
+ENV RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup \
+    RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
+
+RUN set -eux; \
+    for sources in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+      if [ -f "$sources" ]; then \
+        sed -i \
+          -e 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn/debian|g' \
+          -e 's|security.debian.org|mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+          "$sources"; \
+      fi; \
+    done; \
+    mkdir -p /usr/local/cargo; \
+    printf '%s\n' \
+      '[source.crates-io]' \
+      'replace-with = "tuna"' \
+      '' \
+      '[source.tuna]' \
+      'registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"' \
+      > /usr/local/cargo/config.toml; \
+    apt-get update \
     && apt-get install -y --no-install-recommends musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
