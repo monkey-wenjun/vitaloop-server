@@ -1,0 +1,13 @@
+# 预编译二进制的运行镜像：本地 cargo 构建静态 musl 后，直接打进 scratch。
+# 不拉 rust 基础镜像，构建通常在 1 秒内完成。
+FROM scratch
+
+COPY vitaloop-server /vitaloop-server
+
+VOLUME ["/data"]
+EXPOSE 8793
+
+# 地图瓦片上游（Protomaps 月度构建），部署时可用 -e PMTILES_URL=... 覆盖。
+ENV PMTILES_URL=https://build.protomaps.com/20261109.pmtiles
+
+ENTRYPOINT ["/vitaloop-server", "--bind", "0.0.0.0:8793", "--data", "/data"]

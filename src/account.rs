@@ -846,12 +846,14 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             };
             let base = fs::read(data_path(root, &id)).unwrap_or_else(|_| b"{}".to_vec());
             let patches = fs::read(patches_path(root, &id)).unwrap_or_default();
+            // 客户端上传的是 gzip 快照，但下载时按明文 JSON 解析；即使没有
+            // 增量补丁也必须解压后再返回，否则客户端 jsonDecode 会失败。
+            let Some(raw) = decode_snapshot(base) else {
+                return Some((500, "text/plain", b"cannot decode snapshot".to_vec()));
+            };
             let body = if patches.is_empty() {
-                base
+                raw
             } else {
-                let Some(raw) = decode_snapshot(base) else {
-                    return Some((500, "text/plain", b"cannot decode snapshot".to_vec()));
-                };
                 let Some(mut merged) = std::str::from_utf8(&raw)
                     .ok()
                     .and_then(|text| json::parse(text).ok())
@@ -1755,6 +1757,46 @@ mod tests {
             .and_then(Json::as_array)
             .unwrap();
         assert_eq!(rows.len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn get_health_data_decodes_gzip_snapshot_without_patches() {
+        let root = dir();
+        let id = "gzip-account";
+        let account_dir = root.join("accounts").join(id);
+        fs::create_dir_all(&account_dir).unwrap();
+
+        let snapshot = br#"{"tables":{"daily_metrics":{"columns":["day","steps"],"key":["day"],"rows":[[1,1234]]}}}"#;
+        let mut encoder = flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        use std::io::Write;
+        encoder.write_all(snapshot).unwrap();
+        fs::write(account_dir.join("health.json"), encoder.finish().unwrap()).unwrap();
+        fs::write(account_dir.join("health.patches.jsonl"), b"").unwrap();
+
+        let token = issue_session(&root, id);
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {token}"));
+        let req = Request {
+            method: "GET".into(),
+            path: "/v1/health/data".into(),
+            headers,
+            body: Vec::new(),
+        };
+        let (code, _, body) = route(&req, &root).expect("route");
+        assert_eq!(code, 200);
+        assert_ne!(body.first().copied(), Some(0x1f), "body must not be gzip");
+        let parsed = json::parse(std::str::from_utf8(&body).unwrap()).expect("valid json");
+        let rows = parsed
+            .get("tables")
+            .and_then(|value| value.get("daily_metrics"))
+            .and_then(|value| value.get("rows"))
+            .and_then(Json::as_array)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

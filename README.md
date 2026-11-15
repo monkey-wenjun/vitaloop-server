@@ -32,6 +32,19 @@ docker build -t vitaloop-server:latest .
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
+### 国内/慢网络快速部署
+
+多阶段构建需要先拉约 300MB 的 `rust:1-slim`，出网慢时会卡很久。已有 musl
+工具链的机器可以在本地编译，再把二进制打成 `scratch` 镜像，秒级完成：
+
+```bash
+cargo build --release --target x86_64-unknown-linux-musl
+mkdir -p build && cp target/x86_64-unknown-linux-musl/release/vitaloop-server build/
+docker build -f Dockerfile.binary -t vitaloop-server:latest build/
+```
+
+Dockerfile 内的 apt、Rustup、crates.io 已默认走清华镜像源，网络正常时多阶段构建也可用。
+
 运行：
 
 ```bash
