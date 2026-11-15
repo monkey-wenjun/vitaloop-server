@@ -45,6 +45,12 @@ docker build -f Dockerfile.binary -t vitaloop-server:latest build/
 
 Dockerfile 内的 apt、Rustup、crates.io 已默认走清华镜像源，网络正常时多阶段构建也可用。
 
+### 生产部署位置
+
+线上服务只部署在 `阿里云`（`8.152.212.165`），数据目录
+`/home/wenjun/vitaloop-sync-data` 绑定到容器 `/data`。不要再部署到 `46` 或其它机器，
+`vitaloop.awen.me` 的 CDN 只回源到这台。
+
 运行：
 
 ```bash
