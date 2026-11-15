@@ -18,6 +18,19 @@ use ureq::Agent;
 // WHU 的 ftp:// 上游 ureq 不支持，且其 HTTPS 端口从本机不可达。改用 BKG 的
 // 公开 HTTPS 广播星历镜像（按年/年积日分目录，每天一份多系统 RINEX）。
 const DEFAULT_UPSTREAM: &str = "https://igs.bkg.bund.de/root_ftp/IGS/BRDC";
+/// BKG / WHU 在阿里云（47）上不可达时，退回公开 NTRIP caster 抓当前 RTCM
+/// 广播星历帧（1019/1020/1042/1046）。纯 std 实现，不引入新依赖。
+const DEFAULT_NTRIP: &str = "rtk2go.com:2101";
+const NTRIP_MOUNTS: [&str; 6] = [
+    "AGROORSOLIC",
+    "AR-NET_Siniarzewo",
+    "backbog",
+    "Balding",
+    "BallyAgopen",
+    "AZU1_RTCM3",
+];
+const NTRIP_KEEP: [u32; 4] = [1019, 1020, 1042, 1046];
+const NTRIP_MIN: [(u32, usize); 4] = [(1019, 16), (1020, 8), (1042, 16), (1046, 8)];
 const GPS_EPOCH_UNIX: f64 = 315_964_800.0;
 const GPS_TO_BDS_WEEK: u32 = 1356;
 const GPS_TO_GST_WEEK: u32 = 1024;
@@ -116,6 +129,7 @@ struct Ephemeris {
 
 pub struct EphemerisService {
     upstream: String,
+    ntrip: String,
     local: Mutex<Option<PathBuf>>,
     agent: Agent,
     cache: Mutex<Option<Ephemeris>>,
@@ -134,12 +148,18 @@ impl EphemerisService {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let ntrip = std::env::var("EPHEMERIS_NTRIP")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_NTRIP.to_string());
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(2)
             .build();
         Self {
             upstream,
+            ntrip,
             local: Mutex::new(local),
             agent: config.into(),
             cache: Mutex::new(None),
@@ -200,8 +220,83 @@ impl EphemerisService {
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             return self.make(&text, format!("file:{}", path.display()), started);
         }
-        let (rinex, source) = self.fetch_hourly()?;
-        self.make(&rinex, source, started)
+        // BKG/WHU 这类学术网镜像在国内机器上经常整段不可达；RINEX 拿不到时
+        // 退回公开 NTRIP 流，直接复用当前的广播星历帧。
+        let rinex_result = self.fetch_hourly();
+        let rinex_error = match rinex_result {
+            Ok((rinex, source)) => match self.make(&rinex, source, started) {
+                Ok(value) => return Ok(value),
+                Err(error) => error,
+            },
+            Err(error) => error,
+        };
+        eprintln!("RINEX 星历不可用（{rinex_error}），改用 NTRIP 广播星历");
+        self.make_from_ntrip(started)
+    }
+
+    fn make_from_ntrip(&self, started: Instant) -> Result<Ephemeris, String> {
+        let (host, port) = self.ntrip.split_once(':').unwrap_or((self.ntrip.as_str(), "2101"));
+        let port = port.parse::<u16>().unwrap_or(2101);
+        let mut union: BTreeMap<u32, BTreeMap<u32, (u64, Vec<u8>)>> = BTreeMap::new();
+        let mut errors = Vec::new();
+        for mount in NTRIP_MOUNTS {
+            match ntrip_grab(host, port, mount, 30) {
+                Ok(frames) => {
+                    for (message, sv, toe, frame) in frames {
+                        let table = union.entry(message).or_default();
+                        let keep = table
+                            .get(&sv)
+                            .map(|(old, _)| toe >= *old)
+                            .unwrap_or(true);
+                        if keep {
+                            table.insert(sv, (toe, frame));
+                        }
+                    }
+                }
+                Err(error) => errors.push(format!("{mount}: {error}")),
+            }
+        }
+        if let Some(missing) = NTRIP_MIN
+            .iter()
+            .find(|(message, need)| union.get(message).map(|t| t.len()).unwrap_or(0) < *need)
+        {
+            return Err(format!(
+                "NTRIP 星历不足：{} 只有 {} 颗（要求 {}）；{}",
+                missing.0,
+                union.get(&missing.0).map(|t| t.len()).unwrap_or(0),
+                missing.1,
+                errors.join("; ")
+            ));
+        }
+        let mut rtcm = Vec::new();
+        for message in NTRIP_KEEP {
+            if let Some(table) = union.get(&message) {
+                for (_, frame) in table.values() {
+                    rtcm.extend_from_slice(frame);
+                }
+            }
+        }
+        let generated_at = now_unix().floor() as u64;
+        let zip = build_zip(&rtcm, generated_at);
+        let count = |message: u32| union.get(&message).map(|t| t.len()).unwrap_or(0);
+        eprintln!(
+            "星历生成完成（NTRIP）：{} GPS / {} GLONASS / {} BDS / {} GALILEO，{} ms",
+            count(1019),
+            count(1020),
+            count(1042),
+            count(1046),
+            started.elapsed().as_millis()
+        );
+        Ok(Ephemeris {
+            generated_at,
+            source: format!("ntrip:{host}:{port}"),
+            rtcm,
+            zip,
+            gps: count(1019),
+            glo: count(1020),
+            bds: count(1042),
+            galileo: count(1046),
+        })
     }
 
     fn fetch_hourly(&self) -> Result<(String, String), String> {
