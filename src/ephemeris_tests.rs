@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn listing_parser_handles_html_and_ftp() {
+    let html = r#"<tr><td><a href="BRDC00WRD_R_20263180000_01D_MN.rnx.gz">x</a></td></tr>
+<tr><td><a href="BRD400DLR_S_20263180000_01D_MN.rnx.gz">y</a></td></tr>"#;
+    assert_eq!(
+        parse_ftp_names(html),
+        vec![
+            "BRDC00WRD_R_20263180000_01D_MN.rnx.gz",
+            "BRD400DLR_S_20263180000_01D_MN.rnx.gz"
+        ]
+    );
+    let ftp = "-rw-r--r-- 1 0 0 1234 Jan 1 00:00 BRDC00WRD_R_20263180000_01D_MN.rnx.gz\n";
+    assert_eq!(
+        parse_ftp_names(ftp),
+        vec!["BRDC00WRD_R_20263180000_01D_MN.rnx.gz"]
+    );
+}
+
+#[test]
 fn crc24_known_vector() {
     assert_eq!(crc24q(b"123456789"), [0xcd, 0xe7, 0x03]);
 }
@@ -93,6 +111,34 @@ fn rinex_flex_floats() {
 }
 
 #[test]
+fn rinex3_epoch_prefix_is_stripped() {
+    // BKG 的 RINEX 3 记录以"年 月 日 时 分 秒"开头，必须剥离后再按 GPS/BDS/GAL
+    // 字段取值，否则 af0 被当作年份、周数整体错位。
+    let text = "\
+     3.05           NAVIGATION DATA     MIXED               RINEX VERSION / TYPE
+                                                            END OF HEADER
+G04 2026 11 14 00 00 00 6.467755883932E-05-3.410605131648E-13 0.000000000000E+00
+     6.000000000000E+01-7.459375000000E+01 3.931949495765E-09 1.787140290252E+00
+    -3.794208168983E-06 4.104259773158E-03 9.303912520409E-06 5.153651403427E+03
+     5.184000000000E+05-5.029141902924E-08 6.831821066484E-01 1.862645149231E-08
+     9.736762439238E-01 2.079062500000E+02-2.895474028184E+00-7.678891285216E-09
+     1.707213969457E-10 1.000000000000E+00 2.444000000000E+03 0.000000000000E+00
+     2.000000000000E+00 0.000000000000E+00-4.656612873077E-09 6.000000000000E+01
+     5.164860000000E+05 4.000000000000E+00
+";
+    let records = parse_nav(text);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.system, 'G');
+    assert_eq!(record.sv, 4);
+    assert!((record.vals[0] - 6.467755883932e-05).abs() < 1e-18);
+    let entry = nav_entry(records.into_iter().next().unwrap(), 0).unwrap();
+    assert_eq!(entry.sv, 4);
+    assert!((entry.af0 - 6.467755883932e-05).abs() < 1e-18);
+    assert!((entry.sqrta - 5153.651403427).abs() < 1e-9);
+}
+
+#[test]
 fn zip_contains_local_agnss_only() {
     let zip = build_zip(b"rtcm", 1794637801);
     let names = zip_name_entries(&zip);
@@ -152,4 +198,15 @@ fn zip_name_entries(zip: &[u8]) -> Vec<String> {
         }
     }
     names
+}
+
+#[test]
+fn civil_day_conversion_matches_epoch() {
+    assert_eq!(days_from_civil(1970, 1, 1), 0);
+    assert_eq!(days_from_civil(2026, 11, 15), 20_772);
+    assert_eq!(
+        days_from_civil(2026, 11, 15) * 86400 + 2 * 3600 + 15 * 60,
+        1_794_708_900
+    );
+    assert_eq!(chrono_parts(1_794_708_900.0), (2026, 11, 15, 2, 15, 0));
 }

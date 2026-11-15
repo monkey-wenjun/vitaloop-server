@@ -669,7 +669,9 @@ const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 { month + 12 } else { month };
-    365 * y + y / 4 - y / 100 + y / 400 + (153 * m - 457) / 5 + day - 719_468
+    // (153*m - 457)/5 是"当月 1 日"的 0 基年内偏移，所以要 + day - 1；
+    // 旧代码写成 + day 会让每个日期整体偏大一天（GLONASS 历元因此全被当成未来）。
+    365 * y + y / 4 - y / 100 + y / 400 + (153 * m - 457) / 5 + day - 1 - 719_468
 }
 
 fn civil_from_days(year: i64, month: i64, day: i64) -> i64 {
@@ -688,13 +690,26 @@ fn day_of_year(year: i64, month: u32, day: u32) -> u32 {
 }
 
 fn parse_ftp_names(listing: &str) -> Vec<String> {
-    listing
-        .lines()
-        .filter_map(|line| {
-            let name = line.rsplit([' ', '/']).next()?.trim();
-            (!name.is_empty() && name.ends_with(".rnx.gz")).then(|| name.to_string())
-        })
-        .collect()
+    let mut names = Vec::new();
+    for line in listing.lines() {
+        // HTML 目录页（BKG 等 HTTPS 镜像）：<a href="BRDC...rnx.gz">
+        if let Some(start) = line.find("href=\"") {
+            let rest = &line[start + 6..];
+            if let Some(end) = rest.find('"') {
+                let name = rest[..end].trim();
+                if name.ends_with(".rnx.gz") && !names.iter().any(|item| item == name) {
+                    names.push(name.to_string());
+                }
+            }
+            continue;
+        }
+        // 传统 FTP 列表：`-rw-r--r-- 1 ... BRDC...rnx.gz`
+        let name = line.rsplit([' ', '/']).next().unwrap_or("").trim();
+        if name.ends_with(".rnx.gz") && !names.iter().any(|item| item == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 fn gunzip(bytes: &[u8]) -> Option<String> {
@@ -763,10 +778,38 @@ fn parse_nav(text: &str) -> Vec<NavRecord> {
                 break;
             }
         }
+        // RINEX 3 每条记录以 6 个历元字段开头（年 月 日 时 分 秒），RINEX 2
+        // 没有。上游换镜像后这里若不自适应，af0 会被读成"年"，周数整体错位。
+        if looks_like_epoch(&record.vals) {
+            record.vals.drain(0..6);
+        }
         records.push(record);
         index = continuation;
     }
     records
+}
+
+fn looks_like_epoch(vals: &[f64]) -> bool {
+    if vals.len() < 9 {
+        return false;
+    }
+    let year = vals[0];
+    let month = vals[1];
+    let day = vals[2];
+    let hour = vals[3];
+    let minute = vals[4];
+    let second = vals[5];
+    year.fract() == 0.0
+        && (1980.0..=2100.0).contains(&year)
+        && month.fract() == 0.0
+        && (1.0..=12.0).contains(&month)
+        && day.fract() == 0.0
+        && (1.0..=31.0).contains(&day)
+        && hour.fract() == 0.0
+        && (0.0..=23.0).contains(&hour)
+        && minute.fract() == 0.0
+        && (0.0..=59.0).contains(&minute)
+        && (0.0..=60.0).contains(&second)
 }
 
 fn parse_glo(text: &str) -> Vec<GloEntry> {
