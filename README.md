@@ -2,7 +2,9 @@
 
 [English](README.en.md) | 简体中文
 
-[Vitaloop](https://github.com/monkey-wenjun/vitaloop-app)（元环健康看板）的自托管同步后端：账号体系、健康快照增量同步、运动记录、地图样式/瓦片代理，以及一个只读的 **MCP（Model Context Protocol）** 接口，让 AI 助手直接读取血压、血糖、体重、睡眠、HRV 等数据。
+[[Vitaloop](https://github.com/monkey-wenjun/vitaloop-app)（元环健康看板）的自托管同步后端：账号体系、健康快照增量同步、运动记录、地图样式/瓦片代理，以及一个只读的 **MCP（Model Context Protocol）** 接口，让 AI 助手直接读取血压、血糖、体重、睡眠、HRV 等数据。
+
+官网（中英双语）：<https://vitaloop.awen.me/>
 
 单个静态 Rust 二进制，无第三方 crate 运行时依赖；容器基于 `scratch`。
 

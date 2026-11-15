@@ -2,11 +2,13 @@
 
 English | [简体中文](README.md)
 
-Self-hosted sync backend for [Vitaloop](https://github.com/monkey-wenjun/vitaloop-app)
+Self-hosted sync backend for [[Vitaloop](https://github.com/monkey-wenjun/vitaloop-app)
 (an open-source health dashboard): accounts, incremental health snapshot sync,
 workout records, map style/tile proxying, and a read-only **MCP (Model Context
 Protocol)** endpoint that lets AI assistants read blood pressure, blood glucose,
 weight, sleep, HRV, and other data.
+
+Website (English / 简体中文): <https://vitaloop.awen.me/>
 
 A single static Rust binary with no third-party crate at runtime; the container
 image is based on `scratch`.
