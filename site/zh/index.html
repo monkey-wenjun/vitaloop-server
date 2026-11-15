@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vitaloop — 本地优先的 Android 健康与运动看板</title>
+<meta name="description" content="Vitaloop（元环）是一款免费开源的 Android 健康与运动看板：直连华为手表同步，数据存在本地 SQLite，云端同步可选且完全自托管。">
+<link rel="canonical" href="https://vitaloop.awen.me/zh/">
+<link rel="alternate" hreflang="zh-CN" href="https://vitaloop.awen.me/zh/">
+<link rel="alternate" hreflang="en" href="https://vitaloop.awen.me/">
+<link rel="icon" href="../assets/icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Vitaloop">
+<meta property="og:description" content="本地优先的 Android 健康与运动看板，直连华为手表同步，云端同步可选且完全自托管。">
+<meta property="og:image" content="https://vitaloop.awen.me/assets/screenshots/home-light-zh.png">
+<meta property="og:url" content="https://vitaloop.awen.me/zh/">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <img src="../assets/icon.png" alt="">
+    <span class="brand">Vitaloop</span>
+    <nav>
+      <a href="#features">功能</a>
+      <a href="#screenshots">截图</a>
+      <a href="#install">安装</a>
+      <a href="#server">自托管</a>
+      <a href="../" lang="en">English</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">v0.1 预览版 · AGPL-3.0</span>
+        <h1>你的手表数据，<br>留在你自己的机器上。</h1>
+        <p class="lede">
+          Vitaloop（元环）是一款免费开源的 Android 健康与运动应用。
+          它通过蓝牙直连华为手表读取数据，全部写进本地 SQLite；
+          只有当你自己部署了服务端时，才会把数据同步上去。
+        </p>
+        <div class="actions">
+          <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">下载 APK</a>
+          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-app">应用源码</a>
+          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-server">服务端</a>
+        </div>
+      </div>
+      <div class="hero-shots">
+        <img src="../assets/screenshots/home-light-zh.webp" alt="Vitaloop 健康首页" width="380" height="836">
+        <img src="../assets/screenshots/sleep-light-zh.webp" alt="Vitaloop 睡眠详情" width="380" height="836">
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>能做什么</h2>
+      <p class="section-note">本地优先。不需要账号，没有遥测。</p>
+      <div class="cards">
+        <div class="card">
+          <h3>准备度与每日看板</h3>
+          <p>由 HRV、睡眠、静息心率、皮肤温度、压力与恢复情况算出准备度评分；
+          缺失的指标会自动剔除，其余权重重新归一化。</p>
+        </div>
+        <div class="card">
+          <h3>华为手表同步</h3>
+          <p>经典蓝牙 RFCOMM + HiChain 认证，配对流程参照 Gadgetbridge 的公开文档。
+          睡眠、心率、压力、HRV、血氧和运动记录增量拉取。</p>
+        </div>
+        <div class="card">
+          <h3>运动分析</h3>
+          <p>地图轨迹、心率曲线、分段、海拔、跑步动态、训练负荷、训练计划，
+          支持 GPX/TCX 导出，以及把整场运动生成一张长图分享。</p>
+        </div>
+        <div class="card">
+          <h3>地形地图</h3>
+          <p>Protomaps PMTiles 底图带绿色高程着色，叠加 DEM 山体阴影与服务端实时计算的等高线。
+          可倾斜到 45° 获得接近立体的视角，长按图层即可切换。</p>
+        </div>
+        <div class="card">
+          <h3>数据迁移与导出</h3>
+          <p>一次性导入旧版数据库、运动轨迹、个人资料、目标与华为配对信息；
+          随时导出 GPX/TCX，数据不会被锁在应用里。</p>
+        </div>
+        <div class="card">
+          <h3>可选的自托管同步</h3>
+          <p>账号制云端备份与实时轨迹分享，后端由你自己部署。
+          在填写服务器地址并登录之前，不会向外发送任何数据。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2>截图</h2>
+      <p class="section-note">来自 Android 构建，设备数据为演示用示例数据。</p>
+      <div class="shots">
+        <figure>
+          <img src="../assets/screenshots/home-light-zh.webp" alt="健康首页" loading="lazy">
+          <figcaption>健康</figcaption>
+        </figure>
+        <figure>
+          <img src="../assets/screenshots/sleep-light-zh.webp" alt="睡眠详情" loading="lazy">
+          <figcaption>睡眠</figcaption>
+        </figure>
+        <figure>
+          <img src="../assets/screenshots/sport-light-zh.webp" alt="运动首页" loading="lazy">
+          <figcaption>运动</figcaption>
+        </figure>
+        <figure>
+          <img src="../assets/screenshots/statistics-light-zh.webp" alt="运动统计" loading="lazy">
+          <figcaption>数据统计</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap split">
+      <div>
+        <h2>安装</h2>
+        <p class="section-note">Android 7.0 及以上，arm64。</p>
+        <ul class="plain">
+          <li>下载签名后的 APK，在手机上打开安装。</li>
+          <li>允许你使用的浏览器或文件管理器安装应用。</li>
+          <li>授予定位、后台定位、附近设备与通知权限，轨迹记录和手表同步才能持续运行。</li>
+          <li>在<strong>设置 → 华为手表</strong>里配对；应用会引导完成华为认证密钥流程。</li>
+        </ul>
+        <p class="callout warn">
+          演示版 APK 只把作者自己的服务器用于更新检查和地图瓦片。
+          请不要拿这个实例同步真实健康数据 —— 请自己部署一份服务端。
+        </p>
+      </div>
+      <div>
+        <h2>从源码构建</h2>
+        <p class="section-note">Flutter 3.47+、Rust 1.85+、JDK 21、Android SDK 35。</p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-app
+cd vitaloop-app
+flutter pub get
+flutter gen-l10n
+flutter build apk --release \
+  --target-platform android-arm64 --split-per-abi</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="server">
+    <div class="wrap split">
+      <div>
+        <h2>自托管服务端</h2>
+        <p class="section-note">单个静态 Rust 二进制，运行时零第三方 crate。</p>
+        <ul class="plain">
+          <li><strong>账号</strong> — 邮箱 + 密码，加盐 SHA-256 迭代 60k 轮，30 天 Bearer 会话。</li>
+          <li><strong>同步</strong> — 全量健康快照加只追加的增量日志，读取时合并。</li>
+          <li><strong>运动</strong> — 按账号缓存，提供列表与详情接口。</li>
+          <li><strong>MCP</strong> — 只读的 Model Context Protocol 接口，
+            AI 助手可以用同一个 token 查询同一份数据。</li>
+          <li><strong>地图</strong> — PMTiles 样式/瓦片代理、DEM 瓦片，
+            以及用公开高程数据现算的等高线瓦片。</li>
+        </ul>
+      </div>
+      <div>
+        <h2>部署</h2>
+        <p class="section-note">Docker Compose 会编译 musl 二进制，并运行在 scratch 镜像里。</p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server
+cd vitaloop-server
+docker compose up -d   # 127.0.0.1:8793，数据卷 vitaloop-data</code></pre>
+        <p class="callout">
+          然后在前面套一层 HTTPS，把应用指向你自己的域名：
+          <code>设置 → 账号 → 服务器</code>，或构建时加
+          <code>--dart-define=VITALOOP_CLOUD_URL=https://sync.example.com</code>。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>隐私模型</h2>
+      <p class="section-note">公开源码与构建产物不包含默认云服务、星历服务、API Key 或签名密钥。</p>
+      <div class="cards">
+        <div class="card">
+          <h3>默认只在本地</h3>
+          <p>健康数据写在设备的 SQLite 里。不登录也能记录、分析、迁移和导出。</p>
+        </div>
+        <div class="card">
+          <h3>云端需要主动开启</h3>
+          <p>在填写服务器地址并登录之前，同步是关闭的。服务端只保存加盐后的密码哈希，不保存密码本身。</p>
+        </div>
+        <div class="card">
+          <h3>没有追踪器</h3>
+          <p>默认构建里没有广告 SDK、没有产品遥测，也没有第三方统计。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span>Vitaloop · AGPL-3.0</span>
+    <a href="https://github.com/monkey-wenjun/vitaloop-app">应用源码</a>
+    <a href="https://github.com/monkey-wenjun/vitaloop-server">服务端源码</a>
+    <a href="https://www.awen.me">博客</a>
+    <a href="mailto:hi@awen.me">hi@awen.me</a>
+    <a href="../" lang="en">English</a>
+  </div>
+</footer>
+
+</body>
+</html>

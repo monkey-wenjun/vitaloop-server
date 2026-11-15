@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vitaloop — local-first health & workout dashboard for Android</title>
+<meta name="description" content="Vitaloop is a free, open-source, local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted Rust server.">
+<link rel="canonical" href="https://vitaloop.awen.me/">
+<link rel="alternate" hreflang="zh-CN" href="https://vitaloop.awen.me/zh/">
+<link rel="alternate" hreflang="en" href="https://vitaloop.awen.me/">
+<link rel="icon" href="assets/icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Vitaloop">
+<meta property="og:description" content="Local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted server.">
+<meta property="og:image" content="https://vitaloop.awen.me/assets/screenshots/home-light-en.png">
+<meta property="og:url" content="https://vitaloop.awen.me/">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <img src="assets/icon.png" alt="">
+    <span class="brand">Vitaloop</span>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#install">Install</a>
+      <a href="#server">Self-host</a>
+      <a href="zh/" lang="zh-CN">中文</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">v0.1 preview · AGPL-3.0</span>
+        <h1>Your watch data,<br>on your own machine.</h1>
+        <p class="lede">
+          Vitaloop is a free and open-source Android app for tracking health and
+          workouts. It reads Huawei wearables directly over Bluetooth, keeps
+          everything in a local SQLite database, and syncs to a server only if
+          you run one yourself.
+        </p>
+        <div class="actions">
+          <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">Download APK</a>
+          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-app">Source code</a>
+          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-server">Server</a>
+        </div>
+      </div>
+      <div class="hero-shots">
+        <img src="assets/screenshots/home-light-en.webp" alt="Vitaloop fitness dashboard" width="380" height="836">
+        <img src="assets/screenshots/sleep-light-en.webp" alt="Vitaloop sleep details" width="380" height="836">
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="section-note">Local first. No account required, no telemetry.</p>
+      <div class="cards">
+        <div class="card">
+          <h3>Readiness &amp; daily dashboard</h3>
+          <p>A readiness score built from HRV, sleep, resting heart rate, skin
+          temperature, stress, and recovery. Missing metrics are dropped and the
+          remaining weights are normalized.</p>
+        </div>
+        <div class="card">
+          <h3>Huawei watch sync</h3>
+          <p>Classic Bluetooth RFCOMM with HiChain authentication, following the
+          pairing flow documented by Gadgetbridge. Sleep, heart rate, stress,
+          HRV, SpO2, and workouts come in incrementally.</p>
+        </div>
+        <div class="card">
+          <h3>Workout analysis</h3>
+          <p>Maps, heart-rate curves, splits, elevation, running dynamics,
+          training load, plans, and GPX/TCX export, plus long-image sharing of a
+          full workout.</p>
+        </div>
+        <div class="card">
+          <h3>Terrain maps</h3>
+          <p>Protomaps PMTiles basemap with a green elevation tint, DEM
+          hillshade, and server-computed contour lines. Tilt to 45° for a
+          3D-like view; each layer toggles from a long press.</p>
+        </div>
+        <div class="card">
+          <h3>Migration &amp; export</h3>
+          <p>One-time import of a legacy database, workout tracks, profile,
+          goals, and Huawei pairing material. Export to GPX/TCX at any time.</p>
+        </div>
+        <div class="card">
+          <h3>Optional self-hosted sync</h3>
+          <p>Account-based cloud backup and live track sharing against a server
+          you deploy. Nothing is sent anywhere until you enter an address and
+          sign in.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2>Screenshots</h2>
+      <p class="section-note">Captured from the Android build with illustrative device data.</p>
+      <div class="shots">
+        <figure>
+          <img src="assets/screenshots/home-light-en.webp" alt="Fitness dashboard" loading="lazy">
+          <figcaption>Fitness</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/screenshots/sleep-light-en.webp" alt="Sleep details" loading="lazy">
+          <figcaption>Sleep</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/screenshots/sport-light-en.webp" alt="Workout home" loading="lazy">
+          <figcaption>Sport</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/screenshots/statistics-light-en.webp" alt="Workout statistics" loading="lazy">
+          <figcaption>Statistics</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap split">
+      <div>
+        <h2>Install</h2>
+        <p class="section-note">Android 7.0 or newer, arm64.</p>
+        <ul class="plain">
+          <li>Download the signed APK and open it on the phone.</li>
+          <li>Allow installs from the browser or file manager you used.</li>
+          <li>Grant location, background location, nearby devices, and
+            notification permissions so tracks and watch sync keep running.</li>
+          <li>Pair the watch from <strong>Settings → Huawei watch</strong>; the
+            app walks through the Huawei auth-key flow.</li>
+        </ul>
+        <p class="callout warn">
+          The demo APK points at the author's server for update checks and map
+          tiles only. Do not use that instance for real health data — deploy
+          your own server.
+        </p>
+      </div>
+      <div>
+        <h2>Build from source</h2>
+        <p class="section-note">Flutter 3.47+, Rust 1.85+, JDK 21, Android SDK 35.</p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-app
+cd vitaloop-app
+flutter pub get
+flutter gen-l10n
+flutter build apk --release \
+  --target-platform android-arm64 --split-per-abi</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="server">
+    <div class="wrap split">
+      <div>
+        <h2>Self-host the server</h2>
+        <p class="section-note">One static Rust binary, no third-party runtime crates.</p>
+        <ul class="plain">
+          <li><strong>Accounts</strong> — email + password, salted SHA-256 with
+            60k rounds, 30-day bearer sessions.</li>
+          <li><strong>Sync</strong> — full health snapshots plus an append-only
+            delta log, merged on read.</li>
+          <li><strong>Workouts</strong> — cached per account with list and detail
+            endpoints.</li>
+          <li><strong>MCP</strong> — a read-only Model Context Protocol endpoint
+            so an AI assistant can query the same data with the same token.</li>
+          <li><strong>Maps</strong> — PMTiles style/tile proxy, DEM tiles, and
+            contour tiles computed from public elevation data.</li>
+        </ul>
+      </div>
+      <div>
+        <h2>Deploy</h2>
+        <p class="section-note">Docker Compose builds a musl binary and runs it on a scratch image.</p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server
+cd vitaloop-server
+docker compose up -d   # 127.0.0.1:8793, volume vitaloop-data</code></pre>
+        <p class="callout">
+          Then put HTTPS in front of it and point the app at your own domain:
+          <code>Settings → Account → Server</code>, or build with
+          <code>--dart-define=VITALOOP_CLOUD_URL=https://sync.example.com</code>.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Privacy model</h2>
+      <p class="section-note">The public source and build ship without a default cloud server, ephemeris server, API key, or signing key.</p>
+      <div class="cards">
+        <div class="card">
+          <h3>Local-only by default</h3>
+          <p>Health data is written to SQLite on the device. No account is
+          needed to record, analyze, migrate, or export.</p>
+        </div>
+        <div class="card">
+          <h3>Cloud is opt-in</h3>
+          <p>Sync stays off until you enter a server address and sign in. The
+          server stores a salted password hash, never the password.</p>
+        </div>
+        <div class="card">
+          <h3>No trackers</h3>
+          <p>No advertising SDK, no product telemetry, and no third-party
+          analytics in the default build.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span>Vitaloop · AGPL-3.0</span>
+    <a href="https://github.com/monkey-wenjun/vitaloop-app">App source</a>
+    <a href="https://github.com/monkey-wenjun/vitaloop-server">Server source</a>
+    <a href="https://www.awen.me">Blog</a>
+    <a href="mailto:hi@awen.me">hi@awen.me</a>
+    <a href="zh/" lang="zh-CN">简体中文</a>
+  </div>
+</footer>
+
+</body>
+</html>
