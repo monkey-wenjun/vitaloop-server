@@ -380,9 +380,12 @@ fn should_convert_row(
     values: &[Json],
     columns: &[String],
     existing: Option<&AltitudeFields>,
+    convert_unseen: bool,
 ) -> bool {
     let Some(existing) = existing else {
-        return true;
+        // 没有旧值可比时只能靠上传方声明的单位决定。6015 及更早的包不带
+        // 请求头，但快照里的 altitude_unit_v 标记能说明它已按米落库。
+        return convert_unseen;
     };
     let mut compared = false;
     for (name, previous) in [
@@ -408,7 +411,11 @@ fn should_convert_row(
     !compared
 }
 
-fn normalize_watch_rows(table: &mut Json, existing: &HashMap<String, AltitudeFields>) -> usize {
+fn normalize_watch_rows(
+    table: &mut Json,
+    existing: &HashMap<String, AltitudeFields>,
+    convert_unseen: bool,
+) -> usize {
     let Some(columns) = table.get("columns").and_then(Json::as_array).map(|items| {
         items
             .iter()
@@ -444,7 +451,7 @@ fn normalize_watch_rows(table: &mut Json, existing: &HashMap<String, AltitudeFie
         if !id.starts_with("watch-") {
             continue;
         }
-        if !should_convert_row(values, &columns, existing.get(id)) {
+        if !should_convert_row(values, &columns, existing.get(id), convert_unseen) {
             continue;
         }
         for name in [
@@ -485,7 +492,9 @@ fn normalize_snapshot_altitudes(snapshot: &mut Json, existing: &Json) -> usize {
         return 0;
     };
     let existing = table_rows_by_id(existing, "workouts");
-    normalize_watch_rows(workouts, &existing)
+    // 调用方只在「上传方没带单位头、且快照里也没有 14 标记」时才会走到这里，
+    // 说明这是 6014 及更早的包，没见过的新行也按分米换算。
+    normalize_watch_rows(workouts, &existing, true)
 }
 
 fn normalize_delta_altitudes(delta: &mut Json, existing: &Json) -> usize {
@@ -497,12 +506,13 @@ fn normalize_delta_altitudes(delta: &mut Json, existing: &Json) -> usize {
     else {
         return 0;
     };
+    let convert_unseen = !snapshot_reports_metres(existing);
     tables
         .iter_mut()
         .filter(|(name, _)| name == "workouts")
         .map(|(_, table)| {
             let rows = table_rows_by_id(existing, "workouts");
-            normalize_watch_rows(table, &rows)
+            normalize_watch_rows(table, &rows, convert_unseen)
         })
         .sum()
 }
@@ -512,6 +522,41 @@ fn delta_touches_workouts(delta: &Json) -> bool {
         .get("tables")
         .and_then(Json::as_object)
         .map(|tables| tables.iter().any(|(name, _)| name == "workouts"))
+        .unwrap_or(false)
+}
+
+/// 6015 已按米落库，但那一版还没带 `X-Awen-Altitude-Unit` 头；它的快照里
+/// 一定有本机迁移写下的 `altitude_unit_v=14`。以此识别这类过渡版本，
+/// 避免把已经换算过的行再除一次 10。
+fn snapshot_reports_metres(snapshot: &Json) -> bool {
+    snapshot
+        .get("tables")
+        .and_then(|tables| tables.get("settings"))
+        .and_then(|settings| settings.get("columns"))
+        .and_then(Json::as_array)
+        .and_then(|columns| {
+            let names = columns.iter().filter_map(Json::as_str).collect::<Vec<_>>();
+            let key_index = names.iter().position(|name| *name == "key")?;
+            let value_index = names.iter().position(|name| *name == "value")?;
+            Some((key_index, value_index))
+        })
+        .and_then(|(key_index, value_index)| {
+            snapshot
+                .get("tables")
+                .and_then(|tables| tables.get("settings"))
+                .and_then(|settings| settings.get("rows"))
+                .and_then(Json::as_array)
+                .map(|rows| (rows, key_index, value_index))
+        })
+        .map(|(rows, key_index, value_index)| {
+            rows.iter().any(|row| {
+                let Some(values) = row.as_array() else {
+                    return false;
+                };
+                values.get(key_index).and_then(Json::as_str) == Some(ALTITUDE_UNIT_KEY)
+                    && values.get(value_index).and_then(Json::as_str) == Some(ALTITUDE_UNIT_VERSION)
+            })
+        })
         .unwrap_or(false)
 }
 
@@ -665,6 +710,52 @@ fn apply_delta(base: &mut Json, delta: &Json) -> Result<usize, String> {
         *exported = Json::Number(now() as f64 * 1000.0);
     }
     Ok(applied)
+}
+
+/// 只做结构校验，不碰基线快照（基线可能有 86 MB，不能为每条增量都读一遍）。
+/// 能挡住列数/主键写错的包，避免坏增量落盘后把整个账号的快照读取弄成 500。
+fn validate_delta_shape(delta: &Json) -> Result<(), String> {
+    let tables = delta
+        .get("tables")
+        .and_then(Json::as_object)
+        .ok_or("missing tables")?;
+    for (table, block) in tables {
+        let key_names = block
+            .get("key")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("{table}: missing key"))?
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>();
+        let columns = block
+            .get("columns")
+            .and_then(Json::as_array)
+            .ok_or_else(|| format!("{table}: missing columns"))?
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>();
+        if key_names.is_empty() || columns.is_empty() {
+            return Err(format!("{table}: empty key/columns"));
+        }
+        if key_names.iter().any(|key| !columns.contains(key)) {
+            return Err(format!("{table}: key not in columns"));
+        }
+        let width = columns.len();
+        let bad_row = block
+            .get("rows")
+            .and_then(Json::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .any(|row| {
+                row.as_array()
+                    .map(|values| values.len() != width)
+                    .unwrap_or(true)
+            });
+        if bad_row {
+            return Err(format!("{table}: row width mismatch"));
+        }
+    }
+    Ok(())
 }
 
 fn accounts_dir(root: &Path) -> PathBuf {
@@ -1225,7 +1316,9 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                         continue;
                     };
                     if apply_delta(&mut merged, &delta).is_err() {
-                        return Some((500, "text/plain", b"invalid delta".to_vec()));
+                        // 历史版本可能已经落过坏补丁；跳过它，别让整个账号读不出来。
+                        eprintln!("跳过损坏的增量补丁：{}", delta.render());
+                        continue;
                     }
                 }
                 merged.render().into_bytes()
@@ -1259,7 +1352,7 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 .and_then(|raw| String::from_utf8(raw).ok())
                 .and_then(|text| json::parse(&text).ok())
                 .unwrap_or(Json::Null);
-            if !client_reports_metres(req) {
+            if !client_reports_metres(req) && !snapshot_reports_metres(&snapshot) {
                 normalize_snapshot_altitudes(&mut snapshot, &existing);
                 set_altitude_marker(&mut snapshot);
             }
@@ -1316,6 +1409,13 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
             if value.get("tables").and_then(Json::as_object).is_none() {
                 return Some((400, "text/plain", b"missing delta tables".to_vec()));
             }
+            if let Err(reason) = validate_delta_shape(&value) {
+                return Some((
+                    400,
+                    "text/plain",
+                    format!("invalid delta: {reason}").into_bytes(),
+                ));
+            }
             let mut value = value;
             // 旧客户端每分钟都会传增量；绝大多数增量不含 workouts。
             // 只有真的要改 workouts 时才去读并解析整份基线快照（可达 86 MB）。
@@ -1324,7 +1424,10 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                     .and_then(|raw| String::from_utf8(raw).ok())
                     .and_then(|text| json::parse(&text).ok())
                     .unwrap_or(Json::Null);
-                normalize_delta_altitudes(&mut value, &existing);
+                // 6015 的快照里已有 14 标记，它的增量也已是米。
+                if !snapshot_reports_metres(&existing) {
+                    normalize_delta_altitudes(&mut value, &existing);
+                }
             }
             let text = value.render();
             let patches = patches_path(root, &id);
@@ -2227,6 +2330,25 @@ mod tests {
     }
 
     #[test]
+    fn malformed_delta_is_rejected_before_write() {
+        let short_row = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["id","elevation_gain"],"rows":[["watch-1"]]}}}"#,
+        )
+        .unwrap();
+        assert!(validate_delta_shape(&short_row).is_err());
+        let missing_key = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["elevation_gain"],"rows":[[1]]}}}"#,
+        )
+        .unwrap();
+        assert!(validate_delta_shape(&missing_key).is_err());
+        let good = json::parse(
+            r#"{"tables":{"workouts":{"key":["id"],"columns":["id","elevation_gain"],"rows":[["watch-1",2]]}}}"#,
+        )
+        .unwrap();
+        assert!(validate_delta_shape(&good).is_ok());
+    }
+
+    #[test]
     fn baseline_index_keeps_only_altitude_fields() {
         let snapshot = altitude_snapshot(161.0, 201.0);
         let rows = table_rows_by_id(&snapshot, "workouts");
@@ -2235,6 +2357,20 @@ mod tests {
         assert_eq!(row.elevation_gain, Some(201.0));
         assert_eq!(row.min_altitude, None);
         assert_eq!(row.elevation_loss, None);
+    }
+
+    #[test]
+    fn snapshot_marker_marks_transitional_client_as_metric() {
+        let mut snapshot = altitude_snapshot(161.0, 201.0);
+        assert!(!snapshot_reports_metres(&snapshot));
+        set_altitude_marker(&mut snapshot);
+        assert!(snapshot_reports_metres(&snapshot));
+
+        let stale = json::parse(
+            r#"{"tables":{"settings":{"columns":["key","value"],"rows":[["altitude_unit_v","13"]]}}}"#,
+        )
+        .unwrap();
+        assert!(!snapshot_reports_metres(&stale));
     }
 
     #[test]

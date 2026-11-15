@@ -15,7 +15,9 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
-const DEFAULT_UPSTREAM: &str = "ftp://igs.gnsswhu.cn/pub/gps/data/hourly";
+// WHU 的 ftp:// 上游 ureq 不支持，且其 HTTPS 端口从本机不可达。改用 BKG 的
+// 公开 HTTPS 广播星历镜像（按年/年积日分目录，每天一份多系统 RINEX）。
+const DEFAULT_UPSTREAM: &str = "https://igs.bkg.bund.de/root_ftp/IGS/BRDC";
 const GPS_EPOCH_UNIX: f64 = 315_964_800.0;
 const GPS_TO_BDS_WEEK: u32 = 1356;
 const GPS_TO_GST_WEEK: u32 = 1024;
@@ -220,7 +222,9 @@ impl EphemerisService {
             let names = parse_ftp_names(&listing)
                 .into_iter()
                 .filter(|name| name.ends_with("_MN.rnx.gz"))
-                .take(24)
+                // 日播发镜像一天只有一份混合星历；取文件最小的那份即可
+                // （WRD 约 1.2 MB，DLR 约 1.8 MB）。
+                .take(1)
                 .collect::<Vec<_>>();
             if names.is_empty() {
                 continue;
@@ -240,7 +244,7 @@ impl EphemerisService {
             }
             requested_unix -= 3600.0;
         }
-        Err("WHU hourly FTP has no usable RINEX".into())
+        Err(format!("{} 没有可用的 RINEX", self.upstream))
     }
 
     fn get(&self, url: String) -> Result<Vec<u8>, String> {
