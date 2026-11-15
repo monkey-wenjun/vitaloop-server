@@ -19,7 +19,8 @@ use std::time::Duration;
 const TILE: usize = 256;
 const MAX_CACHE_ENTRIES: usize = 4096;
 /// 原始 DEM PNG 比等高线大（约 100 KB），单独限一个更小的上限。
-const MAX_DEM_CACHE_ENTRIES: usize = 768;
+/// 它只负责让 `/dem` 和 `/contours` 复用同一份数据，256 张足够一次浏览。
+const MAX_DEM_CACHE_ENTRIES: usize = 256;
 /// AWS terrarium 最高只到 z15；再往里放大由 MapLibre 自己 overzoom。
 const MAX_ZOOM: u8 = 15;
 const DEFAULT_UPSTREAM: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
