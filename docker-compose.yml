@@ -15,6 +15,10 @@ services:
     # 不需要博客只读接入时，可以不建这个文件，或删掉下面一行。
     env_file:
       - ./blog.env
+      # 私有部署的星历 CDN 地址等只放本机 0600 文件，不进仓库。
+      # 文件不存在时跳过（Compose v2.24+ 支持 required）。
+      - path: ./deploy.env
+        required: false
     environment:
       # 反向代理的对外地址；不设则按请求 Host 头推断。
       # PUBLIC_BASE_URL: https://example.com

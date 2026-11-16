@@ -183,12 +183,9 @@ fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     let mut interlace = 0u8;
     let mut idat: Vec<u8> = Vec::new();
     while pos + 8 <= bytes.len() {
-        let length = u32::from_be_bytes([
-            bytes[pos],
-            bytes[pos + 1],
-            bytes[pos + 2],
-            bytes[pos + 3],
-        ]) as usize;
+        let length =
+            u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+                as usize;
         let kind = &bytes[pos + 4..pos + 8];
         let start = pos + 8;
         let end = start.checked_add(length).ok_or("PNG 长度溢出")?;
@@ -197,8 +194,18 @@ fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
         }
         match kind {
             b"IHDR" => {
-                width = u32::from_be_bytes([bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3]]) as usize;
-                height = u32::from_be_bytes([bytes[start + 4], bytes[start + 5], bytes[start + 6], bytes[start + 7]]) as usize;
+                width = u32::from_be_bytes([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ]) as usize;
+                height = u32::from_be_bytes([
+                    bytes[start + 4],
+                    bytes[start + 5],
+                    bytes[start + 6],
+                    bytes[start + 7],
+                ]) as usize;
                 if bytes[start + 8] != 8 {
                     return Err("只支持 8 bit PNG".into());
                 }
@@ -235,12 +242,20 @@ fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
         let filter = raw[row * (stride + 1)];
         let src = &raw[row * (stride + 1) + 1..row * (stride + 1) + 1 + stride];
         let (before, current) = pixels.split_at_mut(row * stride);
-        let prev: &[u8] = if row == 0 { &[] } else { &before[(row - 1) * stride..] };
+        let prev: &[u8] = if row == 0 {
+            &[]
+        } else {
+            &before[(row - 1) * stride..]
+        };
         let out = &mut current[..stride];
         for i in 0..stride {
             let left = if i >= channels { out[i - channels] } else { 0 };
             let up = if prev.is_empty() { 0 } else { prev[i] };
-            let up_left = if prev.is_empty() || i < channels { 0 } else { prev[i - channels] };
+            let up_left = if prev.is_empty() || i < channels {
+                0
+            } else {
+                prev[i - channels]
+            };
             out[i] = match filter {
                 0 => src[i],
                 1 => src[i].wrapping_add(left),
@@ -305,15 +320,7 @@ fn draw_contours(elevation: &[f32], interval: f32) -> Vec<u8> {
                     } else {
                         ([140u8, 92, 52, 115], 1)
                     };
-                    emit_cell(
-                        &mut rgba,
-                        x,
-                        y,
-                        &corners,
-                        level,
-                        color,
-                        width,
-                    );
+                    emit_cell(&mut rgba, x, y, &corners, level, color, width);
                 }
                 level += interval;
             }
@@ -404,13 +411,7 @@ fn emit_cell(
     }
 }
 
-fn draw_line(
-    rgba: &mut [u8],
-    from: (f32, f32),
-    to: (f32, f32),
-    color: [u8; 4],
-    width: i32,
-) {
+fn draw_line(rgba: &mut [u8], from: (f32, f32), to: (f32, f32), color: [u8; 4], width: i32) {
     let dx = to.0 - from.0;
     let dy = to.1 - from.1;
     let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as i32;
@@ -540,7 +541,10 @@ mod tests {
         }
         let rgba = draw_contours(&grid, 50.0);
         let painted = rgba.chunks(4).filter(|px| px[3] > 0).count();
-        assert!(painted > TILE, "坡面上应该有连续的等高线像素，实际 {painted}");
+        assert!(
+            painted > TILE,
+            "坡面上应该有连续的等高线像素，实际 {painted}"
+        );
         assert!(painted < TILE * TILE / 2, "线不该铺满整张图");
     }
 

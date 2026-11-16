@@ -144,7 +144,10 @@ fn timed_rows(snapshot: &Json, name: &str) -> (Vec<Json>, Vec<Vec<Json>>) {
         })
         .collect();
     out.sort_by_key(|(ts, _)| *ts);
-    (columns.to_vec(), out.into_iter().map(|(_, row)| row).collect())
+    (
+        columns.to_vec(),
+        out.into_iter().map(|(_, row)| row).collect(),
+    )
 }
 
 fn copy_missing(keeper: &mut [Json], other: &[Json]) {
@@ -171,12 +174,9 @@ fn merge_weight(columns: &[Json], rows: Vec<Vec<Json>>) -> Vec<Vec<Json>> {
     while start < rows.len() {
         let mut end = start + 1;
         while end < rows.len() {
-            let gap = integer(&rows[end], ts_i).unwrap_or(0)
-                - integer(&rows[start], ts_i).unwrap_or(0);
-            let same = same_reading(
-                number(&rows[end], weight_i),
-                number(&rows[start], weight_i),
-            );
+            let gap =
+                integer(&rows[end], ts_i).unwrap_or(0) - integer(&rows[start], ts_i).unwrap_or(0);
+            let same = same_reading(number(&rows[end], weight_i), number(&rows[start], weight_i));
             if gap > 60_000 || !same {
                 break;
             }
@@ -202,8 +202,8 @@ fn merge_pressure(columns: &[Json], rows: Vec<Vec<Json>>) -> Vec<Vec<Json>> {
     while start < rows.len() {
         let mut end = start + 1;
         while end < rows.len() {
-            let gap = integer(&rows[end], ts_i).unwrap_or(0)
-                - integer(&rows[start], ts_i).unwrap_or(0);
+            let gap =
+                integer(&rows[end], ts_i).unwrap_or(0) - integer(&rows[start], ts_i).unwrap_or(0);
             let same = same_reading(number(&rows[end], sys_i), number(&rows[start], sys_i))
                 && same_reading(number(&rows[end], dia_i), number(&rows[start], dia_i))
                 && same_reading(number(&rows[end], pulse_i), number(&rows[start], pulse_i));
@@ -317,9 +317,8 @@ fn project(snapshot: &Json, days: i64) -> Result<String, String> {
         })
         .collect();
 
-    let ts_of = |columns: &[Json], row: &[Json]| {
-        integer(row, column(columns, "timestamp_ms")).unwrap_or(0)
-    };
+    let ts_of =
+        |columns: &[Json], row: &[Json]| integer(row, column(columns, "timestamp_ms")).unwrap_or(0);
     let recent = |columns: &[Json], rows: Vec<Vec<Json>>| -> Vec<Vec<Json>> {
         rows.into_iter()
             .filter(|row| ts_of(columns, row.as_slice()) >= start)

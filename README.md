@@ -20,7 +20,8 @@
 - **博客数据**：`/blog/daily-fitness`（每日指标）与 `/blog/sleep?days=30`（每晚睡眠、
   最近一晚的分期色块、夜间 HRV / 呼吸），以及 `/blog/body?days=365`（体重、血压、血糖），
   按 `BLOG_HEALTH_ACCOUNT_ID` 只读投影一个账号。
-- **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包。
+- **星历**：`/ephemeris.zip`、`/ephemeris/status`。默认从公开 RINEX 自算 AGNSS 包；
+  私有部署可设 `EPHEMERIS_CDN_URL` 指向自己的华为云 CDN，整包镜像 PGNSS + SubION + AGNSS。
 
 ## 构建
 
@@ -105,6 +106,11 @@ server {
 | `BLOG_HEALTH_ACCOUNT_ID` | 直接指定 `/blog/*` 投影的账号，优先级高于上者 |
 | `EPHEMERIS_UPSTREAM` | RINEX 小时文件站点根目录，用于自算星历 |
 | `EPHEMERIS_RINEX` | 本地 RINEX 文件路径；设置后跳过上游下载 |
+| `EPHEMERIS_CDN_URL` | 私有部署可选：自家星历 CDN 上的 `ephemeris.zip` 地址。设置后优先整包镜像，失败再退回自算源；不设则完全不访问 CDN |
+| `EPHEMERIS_REFRESH_SECS` | 常驻进程的星历刷新间隔（秒，最小 60，默认 3600） |
+
+`EPHEMERIS_CDN_URL` 只在私有部署里设置，值放 `deploy.env`（0600）或容器环境变量，
+不要提交进仓库；`/ephemeris/status` 只返回来源类型 `cdn`，不会暴露域名。
 
 数据布局：
 

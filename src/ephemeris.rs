@@ -1,7 +1,9 @@
 //! 机主本地计算的 GNSS 星历：RINEX-3 -> RTCM 3.3 -> 华为手表 AGNSS zip。
 //!
-//! 这里不接华为 seed/CDN，也不打包 PGNSS / ionosphere / 4056 私有帧；只由
-//! 本服务的 RINEX 输入生成 `HW_AGNSS` 与 `HW_AGNSS_RTCM_33`。
+//! 默认只由本服务的 RINEX 输入生成 `HW_AGNSS` 与 `HW_AGNSS_RTCM_33`，不打包
+//! PGNSS / ionosphere / 4056 私有帧。私有部署可设 `EPHEMERIS_CDN_URL` 指向自己的
+//! 华为云 CDN（内含官方 HiEE seed 解出来的 PGNSS、SubION 与 AGNSS），此时整包
+//! 原样下发；该变量不设就仍走纯自算路径。
 
 use crate::json::Json;
 use flate2::read::GzDecoder;
@@ -34,6 +36,16 @@ const NTRIP_KEEP: [u32; 4] = [1019, 1020, 1042, 1046];
 const NTRIP_IDEAL: [(u32, usize); 4] = [(1019, 16), (1020, 8), (1042, 16), (1046, 8)];
 /// 低于这个数就没有使用价值，直接判失败。
 const NTRIP_MIN: [(u32, usize); 4] = [(1019, 8), (1020, 4), (1042, 6), (1046, 4)];
+/// CDN 整包至少要有这几样才算有效：没有 `time` 手表会当成无效包，
+/// 没有 AGNSS 就只是 PGNSS，定位仍然慢。
+const CDN_REQUIRED: [&str; 4] = [
+    "time",
+    "ephemeris_config.json",
+    "HW_AGNSS_RTCM_33",
+    "HW_PGNSS_GPS",
+];
+/// 默认每小时刷新一次；CDN 源每小时 :30 左右重打包，和 App 侧的判断口径一致。
+const DEFAULT_REFRESH_SECS: u64 = 3600;
 const GPS_EPOCH_UNIX: f64 = 315_964_800.0;
 const GPS_TO_BDS_WEEK: u32 = 1356;
 const GPS_TO_GST_WEEK: u32 = 1024;
@@ -128,6 +140,8 @@ struct Ephemeris {
     glo: usize,
     bds: usize,
     galileo: usize,
+    /// 下载失败时继续下发上一份，但要在状态里说明已经过期。
+    last_error: Option<String>,
 }
 
 pub struct EphemerisService {
@@ -135,6 +149,8 @@ pub struct EphemerisService {
     ntrip: String,
     ntrip_auth: Option<String>,
     ntrip_only: bool,
+    cdn: Option<String>,
+    refresh_secs: u64,
     local: Mutex<Option<PathBuf>>,
     agent: Agent,
     cache: Mutex<Option<Ephemeris>>,
@@ -172,6 +188,17 @@ impl EphemerisService {
         let ntrip_only = std::env::var("EPHEMERIS_SOURCE")
             .map(|value| value.trim().eq_ignore_ascii_case("ntrip"))
             .unwrap_or(false);
+        // 私有部署：把自家华为云 CDN 上的整包镜像过来。变量名不带域名，
+        // 值只放环境变量 / env_file，公开仓库里永远没有默认值。
+        let cdn = std::env::var("EPHEMERIS_CDN_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let refresh_secs = std::env::var("EPHEMERIS_REFRESH_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value >= 60)
+            .unwrap_or(DEFAULT_REFRESH_SECS);
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(2)
@@ -181,11 +208,31 @@ impl EphemerisService {
             ntrip,
             ntrip_auth,
             ntrip_only,
+            cdn,
+            refresh_secs,
             local: Mutex::new(local),
             agent: config.into(),
             cache: Mutex::new(None),
             ready: Condvar::new(),
         }
+    }
+
+    pub fn upstream_label(&self) -> String {
+        if let Some(cdn) = self.cdn.as_ref() {
+            // 只打主机名，日志里不要出现私有域名全文。
+            let host = cdn
+                .split("://")
+                .nth(1)
+                .unwrap_or(cdn)
+                .split('/')
+                .next()
+                .unwrap_or(cdn);
+            return format!("cdn:{host}");
+        }
+        if self.ntrip_only {
+            return format!("ntrip:{}", self.ntrip);
+        }
+        format!("rinex:{}", self.upstream)
     }
 
     pub fn prewarm(&self) -> Result<(), String> {
@@ -195,12 +242,43 @@ impl EphemerisService {
         Ok(())
     }
 
+    /// 定时刷新：星历每小时都会更新，进程常驻时不能只预热一次。
+    /// 失败时保留上一份并记录错误，下个周期继续重试。
+    pub fn run_scheduler(&self) {
+        let interval = Duration::from_secs(self.refresh_secs);
+        loop {
+            std::thread::sleep(interval);
+            match self.refresh() {
+                Ok(mut fresh) => {
+                    let mut guard = self.cache.lock().unwrap();
+                    if let Some(old) = guard.as_mut() {
+                        // 和上一份内容一样就不重复覆盖，避免无谓唤醒等待者。
+                        if old.zip == fresh.zip {
+                            // 之前失败留下的错误已经恢复，状态里不该继续报错。
+                            old.last_error = None;
+                            continue;
+                        }
+                    }
+                    fresh.last_error = None;
+                    *guard = Some(fresh);
+                    self.ready.notify_all();
+                }
+                Err(error) => {
+                    eprintln!("星历定时刷新失败（继续下发上一份）：{error}");
+                    if let Some(current) = self.cache.lock().unwrap().as_mut() {
+                        current.last_error = Some(error);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn status(&self) -> String {
         let guard = self.cache.lock().unwrap();
         let Some(value) = guard.as_ref() else {
             return r#"{"ready":false,"source":null}"#.to_string();
         };
-        let object = Json::Object(vec![
+        let mut fields = vec![
             ("ready".into(), Json::Bool(true)),
             ("source".into(), Json::String(value.source.clone())),
             (
@@ -213,7 +291,15 @@ impl EphemerisService {
             ("galileo".into(), Json::Number(value.galileo as f64)),
             ("rtcm_bytes".into(), Json::Number(value.rtcm.len() as f64)),
             ("zip_bytes".into(), Json::Number(value.zip.len() as f64)),
-        ]);
+            (
+                "age_seconds".into(),
+                Json::Number((now_unix() - value.generated_at as f64).max(0.0).floor()),
+            ),
+        ];
+        if let Some(error) = value.last_error.as_ref() {
+            fields.push(("error".into(), Json::String(error.clone())));
+        }
+        let object = Json::Object(fields);
         object.render()
     }
 
@@ -236,6 +322,13 @@ impl EphemerisService {
 
     fn refresh(&self) -> Result<Ephemeris, String> {
         let started = Instant::now();
+        if let Some(cdn) = self.cdn.as_ref() {
+            match self.make_from_cdn(cdn, started) {
+                Ok(value) => return Ok(value),
+                // CDN 挂了不能让手表完全没星历：退回本地 RINEX / NTRIP。
+                Err(error) => eprintln!("私有 CDN 星历不可用（{error}），改用自算源"),
+            }
+        }
         if let Some(path) = self.local.lock().unwrap().clone() {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -256,6 +349,58 @@ impl EphemerisService {
         };
         eprintln!("RINEX 星历不可用（{rinex_error}），改用 NTRIP 广播星历");
         self.make_from_ntrip(started)
+    }
+
+    /// 私有 CDN 整包镜像：CDN 上已经是解好的 PGNSS / SubION / AGNSS，
+    /// 服务端只做结构校验和透传，不重复解码。
+    fn make_from_cdn(&self, url: &str, started: Instant) -> Result<Ephemeris, String> {
+        // 错误信息里不出现完整 URL：状态接口是公开的，日志也可能被贴出去。
+        let zip = self
+            .get(url.to_string())
+            .map_err(|error| error.replace(url, "cdn"))?;
+        let names = zip_names(&zip)?;
+        if let Some(missing) = CDN_REQUIRED
+            .iter()
+            .find(|required| !names.iter().any(|name| name.ends_with(*required)))
+        {
+            return Err(format!("zip 缺少 {missing}"));
+        }
+        let generated_at = zip_entry(&zip, "time")
+            .and_then(|data| String::from_utf8(data).ok())
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            // eph 服务器写的是毫秒；统一成秒，状态里的 age_seconds 才有意义。
+            .map(|value| {
+                if value > 1_000_000_000_000 {
+                    value / 1000
+                } else {
+                    value
+                }
+            })
+            .unwrap_or_else(|| now_unix().floor() as u64);
+        let rtcm = zip_entry(&zip, "HW_AGNSS_RTCM_33").unwrap_or_default();
+        let (gps, glo, bds, galileo) = count_rtcm(&rtcm);
+        // 状态接口是公开的，只写来源类型，不带私有域名。
+        let source = "cdn".to_string();
+        eprintln!(
+            "星历取自私有 CDN：{} GPS / {} GLONASS / {} BDS / {} GALILEO，{} KB，{} ms",
+            gps,
+            glo,
+            bds,
+            galileo,
+            zip.len() / 1024,
+            started.elapsed().as_millis()
+        );
+        Ok(Ephemeris {
+            generated_at,
+            source,
+            rtcm,
+            zip,
+            gps,
+            glo,
+            bds,
+            galileo,
+            last_error: None,
+        })
     }
 
     fn make_from_ntrip(&self, started: Instant) -> Result<Ephemeris, String> {
@@ -372,6 +517,7 @@ impl EphemerisService {
             glo: count(1020),
             bds: count(1042),
             galileo: count(1046),
+            last_error: None,
         })
     }
 
@@ -522,6 +668,7 @@ impl EphemerisService {
             glo: glo.len(),
             bds: bds.len(),
             galileo: galileo.len(),
+            last_error: None,
         })
     }
 }
@@ -1454,6 +1601,122 @@ fn build_zip(rtcm: &[u8], generated_at: u64) -> Vec<u8> {
     out.extend_from_slice(&central_directory_offset.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out
+}
+
+/// 遍历 zip 的本地文件头，取出条目名。CDN 上的整包由 eph 服务器生成，
+/// 目录层级会随版本变（`pgnss-selfmade-<ts>/`、`agnss-<ts>/`），所以只按
+/// 文件名匹配，不写死路径。
+fn zip_names(zip: &[u8]) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut index = 0;
+    while index + 30 <= zip.len() {
+        if zip[index..index + 4] == [0x50, 0x4b, 0x03, 0x04] {
+            let name_len = u16::from_le_bytes([zip[index + 26], zip[index + 27]]) as usize;
+            let extra_len = u16::from_le_bytes([zip[index + 28], zip[index + 29]]) as usize;
+            let compressed = u32::from_le_bytes([
+                zip[index + 18],
+                zip[index + 19],
+                zip[index + 20],
+                zip[index + 21],
+            ]) as usize;
+            let start = index + 30;
+            let end = start + name_len;
+            if end > zip.len() {
+                return Err("zip 条目名越界".into());
+            }
+            names.push(String::from_utf8_lossy(&zip[start..end]).to_string());
+            index = end + extra_len + compressed;
+        } else if zip[index..index + 4] == [0x50, 0x4b, 0x01, 0x02]
+            || zip[index..index + 4] == [0x50, 0x4b, 0x05, 0x06]
+        {
+            break;
+        } else {
+            index += 1;
+        }
+    }
+    if names.is_empty() {
+        return Err("zip 里没有任何条目".into());
+    }
+    Ok(names)
+}
+
+fn zip_basename(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
+fn zip_entry(zip: &[u8], wanted: &str) -> Option<Vec<u8>> {
+    let mut index = 0;
+    while index + 30 <= zip.len() {
+        if zip[index..index + 4] != [0x50, 0x4b, 0x03, 0x04] {
+            if zip[index..index + 4] == [0x50, 0x4b, 0x01, 0x02]
+                || zip[index..index + 4] == [0x50, 0x4b, 0x05, 0x06]
+            {
+                break;
+            }
+            index += 1;
+            continue;
+        }
+        let flags = u16::from_le_bytes([zip[index + 6], zip[index + 7]]);
+        let method = u16::from_le_bytes([zip[index + 8], zip[index + 9]]);
+        let compressed = u32::from_le_bytes([
+            zip[index + 18],
+            zip[index + 19],
+            zip[index + 20],
+            zip[index + 21],
+        ]) as usize;
+        let name_len = u16::from_le_bytes([zip[index + 26], zip[index + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([zip[index + 28], zip[index + 29]]) as usize;
+        let start = index + 30;
+        let end = start + name_len;
+        if end > zip.len() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&zip[start..end]);
+        let data_start = end + extra_len;
+        let data_end = data_start.saturating_add(compressed).min(zip.len());
+        index = data_end;
+        if zip_basename(&name) != wanted {
+            continue;
+        }
+        // 目前 eph 服务器打的是 stored（无压缩）；遇到 deflate 也顺手解开。
+        if flags & 0x0008 != 0 {
+            return None;
+        }
+        let raw = &zip[data_start..data_end];
+        return match method {
+            0 => Some(raw.to_vec()),
+            8 => {
+                let mut out = Vec::new();
+                flate2::read::DeflateDecoder::new(raw)
+                    .read_to_end(&mut out)
+                    .ok()
+                    .map(|_| out)
+            }
+            _ => None,
+        };
+    }
+    None
+}
+
+/// 从 AGNSS RTCM 帧里统计各星座数量，用于状态接口。
+fn count_rtcm(rtcm: &[u8]) -> (usize, usize, usize, usize) {
+    let mut buf = rtcm.to_vec();
+    let mut frames = Vec::new();
+    extract_rtcm(&mut buf, &mut frames);
+    let mut gps = 0;
+    let mut glo = 0;
+    let mut bds = 0;
+    let mut galileo = 0;
+    for (message, _, _, _) in frames {
+        match message {
+            1019 => gps += 1,
+            1020 => glo += 1,
+            1042 => bds += 1,
+            1046 => galileo += 1,
+            _ => {}
+        }
+    }
+    (gps, glo, bds, galileo)
 }
 
 fn zip_dos_stamp(generated_at: u64) -> (u16, u16) {

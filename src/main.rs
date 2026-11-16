@@ -79,6 +79,7 @@ fn main() {
     });
     eprintln!("地图瓦片上游：{}", state.map.upstream());
     eprintln!("等高线 DEM 上游：{}", state.dem.upstream());
+    eprintln!("星历上游：{}", state.ephemeris.upstream_label());
     let map_warm = Arc::clone(&state);
     thread::spawn(move || match map_warm.map.prewarm() {
         Ok(()) => eprintln!("地图目录已预热"),
@@ -89,6 +90,8 @@ fn main() {
         Ok(()) => eprintln!("星历已预热"),
         Err(error) => eprintln!("星历预热失败：{error}"),
     });
+    let ephemeris_tick = Arc::clone(&state);
+    thread::spawn(move || ephemeris_tick.ephemeris.run_scheduler());
     let warm_root = state.data.clone();
     thread::spawn(move || {
         account::warm_workout_cache(&warm_root);

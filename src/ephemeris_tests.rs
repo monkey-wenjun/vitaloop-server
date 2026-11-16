@@ -186,6 +186,35 @@ fn zip_contains_local_agnss_only() {
 }
 
 #[test]
+fn zip_entry_finds_nested_agnss() {
+    let zip = build_zip(b"rtcm-bytes", 1_794_637_801);
+    let names = zip_names(&zip).unwrap();
+    assert!(names.iter().any(|name| name == "agnss/HW_AGNSS_RTCM_33"));
+    assert_eq!(
+        zip_entry(&zip, "HW_AGNSS_RTCM_33").as_deref(),
+        Some(&b"rtcm-bytes"[..])
+    );
+    assert_eq!(
+        zip_entry(&zip, "time").as_deref(),
+        Some(b"1794637801".as_slice())
+    );
+    assert!(zip_entry(&zip, "HW_PGNSS_GPS").is_none());
+}
+
+#[test]
+fn rtcm_count_matches_encoded_frames() {
+    let mut rtcm = Vec::new();
+    for message in [1019u32, 1020, 1042, 1046] {
+        // 只借 frame() 造一个长度正确、CRC 正确的空载荷帧；统计只看消息号。
+        let mut payload = vec![0u8; if message == 1020 { 43 } else { 59 }];
+        payload[0] = (message >> 4) as u8;
+        payload[1] = ((message & 0x0f) << 4) as u8;
+        rtcm.extend_from_slice(&frame(&payload));
+    }
+    assert_eq!(count_rtcm(&rtcm), (1, 1, 1, 1));
+}
+
+#[test]
 fn fixture_counts() {
     let text = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

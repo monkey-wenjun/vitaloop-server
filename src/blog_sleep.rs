@@ -177,7 +177,8 @@ impl Session {
     /// 跨度超过 3 小时却睡不到 35% 的按假睡眠丢掉。
     fn valid(&self) -> bool {
         let asleep = self.asleep();
-        asleep >= 5.0 && !(self.wall_minutes() >= 90.0 && asleep * 100.0 < self.wall_minutes() * 35.0)
+        asleep >= 5.0
+            && !(self.wall_minutes() >= 90.0 && asleep * 100.0 < self.wall_minutes() * 35.0)
     }
 }
 
@@ -237,10 +238,7 @@ fn night_totals(list: Vec<Session>) -> (i64, i64, i64, i64, i64) {
     let mut rem: f64 = list.iter().map(|s| s.rem).sum();
     let awake: f64 = list.iter().map(|s| s.awake).sum();
     let detailed = deep + light + rem;
-    let anchor: f64 = list
-        .iter()
-        .filter_map(|s| s.anchor_min)
-        .sum();
+    let anchor: f64 = list.iter().filter_map(|s| s.anchor_min).sum();
     let mut asleep = if anchor > 0.0 { anchor } else { detailed };
     if anchor > detailed {
         light += anchor - detailed;
@@ -313,7 +311,9 @@ fn bed_for<'a>(beds: &'a [(i64, i64, Bed)], start_ms: i64, end_ms: i64) -> Optio
             None => true,
             Some((best_distance, best_bed)) => {
                 distance < best_distance
-                    || (distance == best_distance && bed.score.is_some() && best_bed.score.is_none())
+                    || (distance == best_distance
+                        && bed.score.is_some()
+                        && best_bed.score.is_none())
             }
         };
         let _ = wake;
@@ -446,16 +446,14 @@ fn merge_intervals(mut intervals: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 
 /// 主睡眠阶段色块窗口：上床 → 醒来，同时必须罩住所有阶段。
 fn bands_window(snapshot: &Json, start_ms: i64, end_ms: i64, bed: Option<&Bed>) -> (i64, i64) {
-    let mut from = bed
-        .and_then(|b| b.bed_ms)
-        .unwrap_or(start_ms)
-        .min(start_ms);
+    let mut from = bed.and_then(|b| b.bed_ms).unwrap_or(start_ms).min(start_ms);
     let mut to = bed.and_then(|b| b.wake_ms).unwrap_or(end_ms).max(end_ms);
     let (columns, rows) = table(snapshot, "sleep_stages");
     let start_i = column(columns, "start_ms");
     let end_i = column(columns, "end_ms");
     for row in rows {
-        let (Some(stage_start), Some(stage_end)) = (integer(row, start_i), integer(row, end_i)) else {
+        let (Some(stage_start), Some(stage_end)) = (integer(row, start_i), integer(row, end_i))
+        else {
             continue;
         };
         if stage_end <= from || stage_start >= to {
@@ -523,11 +521,11 @@ fn project(snapshot: &Json, days: i64) -> Result<String, String> {
             ("rem".into(), Json::Number((rem * 60) as f64)),
             ("awake".into(), Json::Number((awake * 60) as f64)),
             ("nap".into(), Json::Number(0.0)),
-            ("score".into(), score.map(|v| Json::Number(v as f64)).unwrap_or(Json::Null)),
             (
-                "efficiency".into(),
-                Json::Number(efficiency as f64),
+                "score".into(),
+                score.map(|v| Json::Number(v as f64)).unwrap_or(Json::Null),
             ),
+            ("efficiency".into(), Json::Number(efficiency as f64)),
             (
                 "hrv_avg".into(),
                 hrv_avg.map(Json::Number).unwrap_or(Json::Null),

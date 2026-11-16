@@ -35,8 +35,10 @@ image is based on `scratch`.
   (per-night sleep, the latest night's stage bands, night HRV / breathing) and
   `/blog/body?days=365` (weight, blood pressure, blood glucose), read-only
   projections of the account named by `BLOG_HEALTH_ACCOUNT_ID`.
-- **Ephemeris**: `/ephemeris.zip`, `/ephemeris/status`, an AGNSS package computed
-  from public RINEX data.
+- **Ephemeris**: `/ephemeris.zip`, `/ephemeris/status`. By default the AGNSS
+  package is computed from public RINEX data; private deployments can set
+  `EPHEMERIS_CDN_URL` to mirror a full package (PGNSS + SubION + AGNSS) from
+  their own CDN.
 
 ## Build
 
@@ -129,6 +131,12 @@ server {
 | `BLOG_HEALTH_ACCOUNT_ID` | Sets the account projected by `/blog/*` directly; takes precedence over the previous one |
 | `EPHEMERIS_UPSTREAM` | Root of the hourly RINEX site used to compute ephemeris |
 | `EPHEMERIS_RINEX` | Local RINEX file path; when set, upstream download is skipped |
+| `EPHEMERIS_CDN_URL` | Optional for private deployments: an `ephemeris.zip` on your own CDN. When set it is mirrored first and the computed source is the fallback; when unset no CDN is contacted |
+| `EPHEMERIS_REFRESH_SECS` | Ephemeris refresh interval for long-running processes (seconds, min 60, default 3600) |
+
+Keep `EPHEMERIS_CDN_URL` in a 0600 `deploy.env` or the container environment;
+never commit it. `/ephemeris/status` reports only `cdn` as the source type, not
+the hostname.
 
 Data layout:
 
