@@ -9,6 +9,7 @@
 //! 没有第三方依赖：HTTP、JSON、SHA-256 全部自带；flate2 只解 gzip，ureq 只向上游要瓦片。
 
 mod account;
+mod blog_body;
 mod blog_health;
 mod blog_sleep;
 mod crypto;
@@ -223,6 +224,47 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
                     404,
                     "text/plain",
                     b"sleep unavailable",
+                    "no-cache",
+                    req.method == "HEAD",
+                )
+            }
+        };
+    }
+
+    if req.path.starts_with("/blog/body") {
+        if req.method == "OPTIONS" {
+            return respond_options(&mut stream, "GET, HEAD, OPTIONS");
+        }
+        if req.method != "GET" && req.method != "HEAD" {
+            return respond_map(
+                &mut stream,
+                405,
+                "text/plain",
+                b"method",
+                "no-cache",
+                req.method == "HEAD",
+            );
+        }
+        let days = query_value(&req.path, "days")
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(365)
+            .clamp(1, 3_650);
+        return match blog_body::body(&state.data, days) {
+            Ok(body) => respond_map(
+                &mut stream,
+                200,
+                "application/json",
+                body.as_bytes(),
+                "public, max-age=60",
+                req.method == "HEAD",
+            ),
+            Err(error) => {
+                eprintln!("博客身体指标数据不可用：{error}");
+                respond_map(
+                    &mut stream,
+                    404,
+                    "text/plain",
+                    b"body measurements unavailable",
                     "no-cache",
                     req.method == "HEAD",
                 )

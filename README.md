@@ -18,7 +18,8 @@
 - **地形**：`/dem/{z}/{x}/{y}.png`，原始 terrarium DEM，给 MapLibre 的 `hillshade` / `color-relief` 用。
 - **等高线**：`/contours/{z}/{x}/{y}.png`，从 DEM 现算（marching squares），透明 PNG，无需第三方样式服务。
 - **博客数据**：`/blog/daily-fitness`（每日指标）与 `/blog/sleep?days=30`（每晚睡眠、
-  最近一晚的分期色块、夜间 HRV / 呼吸），按 `BLOG_HEALTH_ACCOUNT_ID` 只读投影一个账号。
+  最近一晚的分期色块、夜间 HRV / 呼吸），以及 `/blog/body?days=365`（体重、血压、血糖），
+  按 `BLOG_HEALTH_ACCOUNT_ID` 只读投影一个账号。
 - **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包。
 
 ## 构建
@@ -147,6 +148,30 @@ server {
 
 时长字段单位为秒（`stages` 里的时间戳是毫秒）。`data` 按醒来时间降序；
 `detail` 只覆盖最新一晚，没有数据时是 `{"has_data": false}`。
+
+## 博客身体指标投影
+
+`GET /blog/body?days=365`（`days` 1–3650，默认 365）把快照里的
+`weight_records`、`blood_pressure_records`、`blood_glucose_records` 按 App 的
+去重规则投影出来：体重 60 秒内同读数合并并互补体成分字段，血压 1 秒内同读数
+合并，血糖同一分钟桶内同值合并；同时丢弃明显不合理的读数（体重 20–400 kg、
+收缩压 50–250、舒张压 30–180、血糖 1–35）。
+
+```json
+{
+  "code": 0,
+  "data": {
+    "weight": [{"id": "...", "timestamp_ms": 1794053566466, "weight_kg": 68.2,
+                "bmi": 22.1, "body_fat_percent": 18.4, "source": "..."}],
+    "blood_pressure": [{"id": "...", "timestamp_ms": 1793146149979,
+                        "systolic": 118, "diastolic": 76, "pulse": 61}],
+    "blood_glucose": [{"id": "...", "timestamp_ms": 1786300000000,
+                       "value": 5.6, "measure_type": "FASTING"}]
+  }
+}
+```
+
+行是快照里的原始列名，未做单位换算；`weight` 保留完整 23 列体成分字段。
 
 ## MCP
 

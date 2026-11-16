@@ -31,9 +31,10 @@ image is based on `scratch`.
 - **Contours**: `/contours/{z}/{x}/{y}.png`, computed from the DEM on the fly
   (marching squares) as transparent PNGs — no third-party terrain service
   needed.
-- **Blog data**: `/blog/daily-fitness` (daily metrics) and `/blog/sleep?days=30`
-  (per-night sleep, the latest night's stage bands, night HRV / breathing),
-  read-only projections of the account named by `BLOG_HEALTH_ACCOUNT_ID`.
+- **Blog data**: `/blog/daily-fitness` (daily metrics), `/blog/sleep?days=30`
+  (per-night sleep, the latest night's stage bands, night HRV / breathing) and
+  `/blog/body?days=365` (weight, blood pressure, blood glucose), read-only
+  projections of the account named by `BLOG_HEALTH_ACCOUNT_ID`.
 - **Ephemeris**: `/ephemeris.zip`, `/ephemeris/status`, an AGNSS package computed
   from public RINEX data.
 
@@ -173,6 +174,33 @@ is only used to draw the latest night's stage bands.
 Durations are seconds (`stages` timestamps are milliseconds). `data` is sorted
 newest first; `detail` only covers the latest night and is
 `{"has_data": false}` when there is nothing to show.
+
+## Blog body projection
+
+`GET /blog/body?days=365` (`days` 1–3650, default 365) projects
+`weight_records`, `blood_pressure_records` and `blood_glucose_records` from the
+snapshot using the app's de-duplication rules: weight readings within 60s merge
+and fill in missing body-composition fields, pressure readings within 1s merge,
+and glucose readings in the same minute bucket with the same value merge.
+Obviously invalid readings are dropped (weight 20–400 kg, systolic 50–250,
+diastolic 30–180, glucose 1–35).
+
+```json
+{
+  "code": 0,
+  "data": {
+    "weight": [{"id": "...", "timestamp_ms": 1794053566466, "weight_kg": 68.2,
+                "bmi": 22.1, "body_fat_percent": 18.4, "source": "..."}],
+    "blood_pressure": [{"id": "...", "timestamp_ms": 1793146149979,
+                        "systolic": 118, "diastolic": 76, "pulse": 61}],
+    "blood_glucose": [{"id": "...", "timestamp_ms": 1786300000000,
+                       "value": 5.6, "measure_type": "FASTING"}]
+  }
+}
+```
+
+Rows keep the snapshot's original column names and units; `weight` carries all
+23 body-composition columns.
 
 ## MCP
 
