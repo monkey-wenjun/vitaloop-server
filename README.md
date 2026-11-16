@@ -17,7 +17,8 @@
 - **地图**：`/style.json`、`/style-dark.json`、`/tiles/{z}/{x}/{y}.mvt`，上游 Protomaps PMTiles，带本地缓存。
 - **地形**：`/dem/{z}/{x}/{y}.png`，原始 terrarium DEM，给 MapLibre 的 `hillshade` / `color-relief` 用。
 - **等高线**：`/contours/{z}/{x}/{y}.png`，从 DEM 现算（marching squares），透明 PNG，无需第三方样式服务。
-- **博客数据**：`/blog/daily-fitness`，按 token 只读暴露一个账号的每日指标。
+- **博客数据**：`/blog/daily-fitness`（每日指标）与 `/blog/sleep?days=30`（每晚睡眠、
+  最近一晚的分期色块、夜间 HRV / 呼吸），按 `BLOG_HEALTH_ACCOUNT_ID` 只读投影一个账号。
 - **星历**：`/ephemeris.zip`、`/ephemeris/status`，从公开 RINEX 自算 AGNSS 包。
 
 ## 构建

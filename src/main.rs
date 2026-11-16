@@ -10,6 +10,7 @@
 
 mod account;
 mod blog_health;
+mod blog_sleep;
 mod crypto;
 mod dem;
 mod ephemeris;
@@ -181,6 +182,47 @@ fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
                     404,
                     "text/plain",
                     b"daily fitness unavailable",
+                    "no-cache",
+                    req.method == "HEAD",
+                )
+            }
+        };
+    }
+
+    if req.path.starts_with("/blog/sleep") {
+        if req.method == "OPTIONS" {
+            return respond_options(&mut stream, "GET, HEAD, OPTIONS");
+        }
+        if req.method != "GET" && req.method != "HEAD" {
+            return respond_map(
+                &mut stream,
+                405,
+                "text/plain",
+                b"method",
+                "no-cache",
+                req.method == "HEAD",
+            );
+        }
+        let days = query_value(&req.path, "days")
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(30)
+            .clamp(1, 365);
+        return match blog_sleep::sleep(&state.data, days) {
+            Ok(body) => respond_map(
+                &mut stream,
+                200,
+                "application/json",
+                body.as_bytes(),
+                "public, max-age=60",
+                req.method == "HEAD",
+            ),
+            Err(error) => {
+                eprintln!("博客睡眠数据不可用：{error}");
+                respond_map(
+                    &mut stream,
+                    404,
+                    "text/plain",
+                    b"sleep unavailable",
                     "no-cache",
                     req.method == "HEAD",
                 )
@@ -451,6 +493,17 @@ fn respond_options(stream: &mut TcpStream, methods: &str) -> std::io::Result<()>
     );
     stream.write_all(head.as_bytes())?;
     stream.flush()
+}
+
+fn query_value(path: &str, name: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == name {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 fn respond_map(

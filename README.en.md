@@ -31,8 +31,9 @@ image is based on `scratch`.
 - **Contours**: `/contours/{z}/{x}/{y}.png`, computed from the DEM on the fly
   (marching squares) as transparent PNGs — no third-party terrain service
   needed.
-- **Blog data**: `/blog/daily-fitness`, read-only daily metrics for one account,
-  gated by a token.
+- **Blog data**: `/blog/daily-fitness` (daily metrics) and `/blog/sleep?days=30`
+  (per-night sleep, the latest night's stage bands, night HRV / breathing),
+  read-only projections of the account named by `BLOG_HEALTH_ACCOUNT_ID`.
 - **Ephemeris**: `/ephemeris.zip`, `/ephemeris/status`, an AGNSS package computed
   from public RINEX data.
 
