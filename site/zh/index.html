@@ -43,7 +43,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">v0.1 预览版</span>
+        <span class="eyebrow">开源 · v0.1.1</span>
         <h1>你的手表数据，<br>留在你自己的机器上。</h1>
         <p class="lede">
           Vitaloop（元环）是一款免费的 Android 健康与运动应用。
@@ -51,7 +51,7 @@
           只有当你自己部署了服务端时，才会把数据同步上去。
         </p>
         <div class="actions">
-          <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">下载 APK</a>
+          <a class="btn primary" href="https://github.com/monkey-wenjun/vitaloop-app/releases/download/v0.1.2/app-arm64-v8a-release.apk">下载 APK</a>
           <a class="btn" href="#features">功能介绍</a>
           <a class="btn" href="#server">自托管</a>
         </div>
@@ -153,10 +153,13 @@
       </div>
       <div>
         <h2>源码</h2>
-        <p class="section-note">暂未公开。</p>
+        <p class="section-note">AGPL-3.0。没有账号系统、遥测或内置密钥。</p>
         <p>
-          应用和服务端都是 Rust + Flutter 写的，但仓库目前是私有的。
-          开放后会在这里补上链接；现在请直接安装上面的体验版 APK。
+          Vitaloop 已开源：
+          <a href="https://github.com/monkey-wenjun/vitaloop-app" target="_blank" rel="noopener">Flutter 应用与 Rust 核心</a>、
+          <a href="https://github.com/monkey-wenjun/vitaloop-server" target="_blank" rel="noopener">自托管 Rust 服务端</a>
+          均已公开。服务端包含
+          <code>src/ephemeris.rs</code> 中的 AGNSS 星历打包逻辑，因此星历服务同样开源。
         </p>
       </div>
     </div>
@@ -212,11 +215,10 @@
       <div>
         <h2>部署</h2>
         <p class="section-note">Docker Compose 会编译 musl 二进制，并运行在 scratch 镜像里。</p>
-        <p>
-          服务端暂时还没公开。公开后会是一个监听 <code>127.0.0.1:8793</code> 的
-          静态 Rust 二进制，只挂一个数据卷。前面套一层 HTTPS，再把应用里的
-          <code>设置 → 账号 → 服务器</code> 指向你自己的域名即可。
-        </p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server.git
+cd vitaloop-server
+docker compose up -d --build</code></pre>
+        <p>静态 Rust 二进制监听 <code>127.0.0.1:8793</code>，只挂一个数据卷。前面套一层 HTTPS，再把应用里的 <code>设置 → 账号 → 服务器</code> 指向你自己的域名即可。</p>
       </div>
     </div>
   </section>
@@ -303,7 +305,7 @@
 
 <footer class="site">
   <div class="wrap">
-    <span>Vitaloop · v0.1 预览版</span>
+    <span>Vitaloop · v0.1.1 · AGPL-3.0</span>
     <a href="https://www.awen.me">博客</a>
     <a href="mailto:hi@awen.me">hi@awen.me</a>
     <a href="../" lang="en">English</a>

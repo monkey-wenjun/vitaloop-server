@@ -43,7 +43,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">v0.1 preview</span>
+        <span class="eyebrow">Open source · v0.1.1</span>
         <h1>Your watch data,<br>on your own machine.</h1>
         <p class="lede">
           Vitaloop is a free Android app for tracking health and
@@ -52,7 +52,7 @@
           you run one yourself.
         </p>
         <div class="actions">
-          <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">Download APK</a>
+          <a class="btn primary" href="https://github.com/monkey-wenjun/vitaloop-app/releases/download/v0.1.2/app-arm64-v8a-release.apk">Download APK</a>
           <a class="btn" href="#features">Features</a>
           <a class="btn" href="#server">Self-host</a>
         </div>
@@ -162,11 +162,15 @@
       </div>
       <div>
         <h2>Source code</h2>
-        <p class="section-note">Not public yet.</p>
+        <p class="section-note">AGPL-3.0. No accounts, telemetry, or bundled keys.</p>
         <p>
-          The app and the server are both written in Rust plus Flutter, but the
-          repositories are private for now. This page will link to them once
-          they open; until then, use the preview APK above.
+          Vitaloop is open source. The
+          <a href="https://github.com/monkey-wenjun/vitaloop-app" target="_blank" rel="noopener">Flutter app with its Rust core</a>
+          and the
+          <a href="https://github.com/monkey-wenjun/vitaloop-server" target="_blank" rel="noopener">self-hosted Rust server</a>
+          are both public. The server also includes the AGNSS ephemeris packager
+          in <code>src/ephemeris.rs</code>, so the app's ephemeris service is open
+          source too.
         </p>
       </div>
     </div>
@@ -227,12 +231,10 @@
       <div>
         <h2>Deploy</h2>
         <p class="section-note">Docker Compose builds a musl binary and runs it on a scratch image.</p>
-        <p>
-          The server is not published yet. When it is, it will be a single
-          static Rust binary listening on <code>127.0.0.1:8793</code>, with one
-          data volume. Put HTTPS in front and point the app at your own domain
-          from <code>Settings → Account → Server</code>.
-        </p>
+        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server.git
+cd vitaloop-server
+docker compose up -d --build</code></pre>
+        <p>The static Rust binary listens on <code>127.0.0.1:8793</code> and uses one data volume. Put HTTPS in front, then point the app at your own domain from <code>Settings → Account → Server</code>.</p>
       </div>
     </div>
   </section>
@@ -322,7 +324,7 @@
 
 <footer class="site">
   <div class="wrap">
-    <span>Vitaloop · v0.1 preview</span>
+    <span>Vitaloop · v0.1.1 · AGPL-3.0</span>
     <a href="https://www.awen.me">Blog</a>
     <a href="mailto:hi@awen.me">hi@awen.me</a>
     <a href="zh/" lang="zh-CN">简体中文</a>
