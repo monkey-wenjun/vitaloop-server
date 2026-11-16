@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>
-  (() => {
-    const mode = localStorage.getItem("vitaloop-theme");
-    const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
-  })();
+    (() => {
+      const mode = localStorage.getItem("vitaloop-theme");
+      const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
 </script>
 <title>Vitaloop — local-first health & workout dashboard for Android</title>
 <meta name="description" content="Vitaloop is a free, local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted Rust server.">

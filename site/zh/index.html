@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>
-  (() => {
-    const mode = localStorage.getItem("vitaloop-theme");
-    const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
-  })();
+    (() => {
+      const mode = localStorage.getItem("vitaloop-theme");
+      const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
 </script>
 <title>Vitaloop — 本地优先的 Android 健康与运动看板</title>
 <meta name="description" content="Vitaloop（元环）是一款免费的 Android 健康与运动看板：直连华为手表同步，数据存在本地 SQLite，云端同步可选且完全自托管。">
