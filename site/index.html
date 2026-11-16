@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  (() => {
+    const mode = localStorage.getItem("vitaloop-theme");
+    const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
 <title>Vitaloop — local-first health & workout dashboard for Android</title>
 <meta name="description" content="Vitaloop is a free, local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted Rust server.">
 <link rel="canonical" href="https://vitaloop.awen.me/">
@@ -34,6 +41,7 @@
       <a href="#pairing">Pairing</a>
       <a href="#server">Self-host</a>
       <a href="#mcp">MCP</a>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color scheme">Light</button>
       <a href="zh/" lang="zh-CN">中文</a>
     </nav>
   </div>
@@ -268,8 +276,13 @@ docker compose up -d --build</code></pre>
           </ul>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="doc-table">
+      <div class="doc-block">
+        <div class="doc-heading">
+          <h3>Read-only health tools</h3>
+          <p>14 tools · Unix milliseconds · newest-first results</p>
+        </div>
+        <div class="table-wrap">
+          <table class="doc-table">
           <thead><tr><th>Tool</th><th>Returns</th><th>Arguments</th></tr></thead>
           <tbody>
             <tr><td><code>health_summary</code></td><td>Aggregated recent overview</td><td><code>days</code> 1–3650, default 7</td></tr>
@@ -280,14 +293,15 @@ docker compose up -d --build</code></pre>
             <tr><td><code>hrv</code></td><td>HRV records</td></tr>
             <tr><td><code>stress</code></td><td>Daily stress</td></tr>
             <tr><td><code>spo2</code></td><td>Daily SpO2</td><td><code>from_ms</code>, <code>to_ms</code>, <code>limit</code></td></tr>
-            <tr><td><code>heart_rate</code></td><td>Heart-rate samples</td><td>Same; defaults to the last 24 hours</td></tr>
-            <tr><td><code>metric_points</code></td><td>Generic metric series</td><td>Same plus <code>metric</code></td></tr>
+            <tr><td><code>heart_rate</code></td><td>Heart-rate samples</td><td><code>from_ms</code>, <code>to_ms</code>, <code>limit</code>; defaults to the last 24 hours</td></tr>
+            <tr><td><code>metric_points</code></td><td>Generic metric series</td><td><code>from_ms</code>, <code>to_ms</code>, <code>limit</code>, <code>metric</code>; defaults to the last 24 hours</td></tr>
             <tr><td><code>sleep</code></td><td>Sessions, bed data, and stages</td><td rowspan="3"><code>from_ms</code>, <code>to_ms</code>, <code>limit</code></td></tr>
             <tr><td><code>daily_metrics</code></td><td>Daily summaries</td></tr>
             <tr><td><code>workouts</code></td><td>Workout records</td></tr>
             <tr><td><code>query_table</code></td><td>Any whitelisted read-only table</td><td><code>table</code> plus the time window and limit</td></tr>
           </tbody>
         </table>
+      </div>
       </div>
       <p class="section-note">
         Timestamps are Unix milliseconds. Daily summaries use <code>date_day</code> (epoch days).

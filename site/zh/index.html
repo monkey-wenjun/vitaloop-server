@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  (() => {
+    const mode = localStorage.getItem("vitaloop-theme");
+    const dark = mode ? mode === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
 <title>Vitaloop — 本地优先的 Android 健康与运动看板</title>
 <meta name="description" content="Vitaloop（元环）是一款免费的 Android 健康与运动看板：直连华为手表同步，数据存在本地 SQLite，云端同步可选且完全自托管。">
 <link rel="canonical" href="https://vitaloop.awen.me/zh/">
@@ -34,6 +41,7 @@
       <a href="#pairing">配对</a>
       <a href="#server">自托管</a>
       <a href="#mcp">MCP</a>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换配色">亮色</button>
       <a href="../" lang="en">English</a>
     </nav>
   </div>
@@ -252,8 +260,13 @@ docker compose up -d --build</code></pre>
           </ul>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="doc-table">
+      <div class="doc-block">
+        <div class="doc-heading">
+          <h3>只读健康工具</h3>
+          <p>14 个工具 · Unix 毫秒 · 结果按时间倒序</p>
+        </div>
+        <div class="table-wrap">
+          <table class="doc-table">
           <thead><tr><th>工具</th><th>返回内容</th><th>参数</th></tr></thead>
           <tbody>
             <tr><td><code>health_summary</code></td><td>近 N 天健康总览</td><td><code>days</code>，1–3650，默认 7</td></tr>
@@ -264,14 +277,15 @@ docker compose up -d --build</code></pre>
             <tr><td><code>hrv</code></td><td>HRV 记录</td></tr>
             <tr><td><code>stress</code></td><td>每日压力</td></tr>
             <tr><td><code>spo2</code></td><td>每日血氧</td><td><code>from_ms</code>、<code>to_ms</code>、<code>limit</code></td></tr>
-            <tr><td><code>heart_rate</code></td><td>心率采样点</td><td>同上；默认最近 24 小时</td></tr>
-            <tr><td><code>metric_points</code></td><td>通用指标时间序列</td><td>同上，另加 <code>metric</code></td></tr>
+            <tr><td><code>heart_rate</code></td><td>心率采样点</td><td><code>from_ms</code>、<code>to_ms</code>、<code>limit</code>；默认最近 24 小时</td></tr>
+            <tr><td><code>metric_points</code></td><td>通用指标时间序列</td><td><code>from_ms</code>、<code>to_ms</code>、<code>limit</code>、<code>metric</code>；默认最近 24 小时</td></tr>
             <tr><td><code>sleep</code></td><td>睡眠会话、卧床与分期</td><td rowspan="3"><code>from_ms</code>、<code>to_ms</code>、<code>limit</code></td></tr>
             <tr><td><code>daily_metrics</code></td><td>每日汇总</td></tr>
             <tr><td><code>workouts</code></td><td>运动记录</td></tr>
             <tr><td><code>query_table</code></td><td>白名单内的任意只读健康表</td><td><code>table</code>，另加时间窗口与 <code>limit</code></td></tr>
           </tbody>
         </table>
+      </div>
       </div>
       <p class="section-note">
         时间参数是 Unix 毫秒；日汇总用 <code>date_day</code>（epoch 天）。

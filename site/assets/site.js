@@ -1,4 +1,18 @@
 (() => {
+  const toggle = document.querySelector("#theme-toggle");
+  const applyTheme = (theme) => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("vitaloop-theme", theme);
+    if (toggle) toggle.textContent = theme === "dark" ? "Light" : "Dark";
+  };
+
+  if (toggle) {
+    toggle.textContent = document.documentElement.dataset.theme === "dark" ? "Light" : "Dark";
+    toggle.addEventListener("click", () => {
+      applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+    });
+  }
+
   const links = document.querySelectorAll('a[data-zoom]');
   if (!links.length) return;
 
