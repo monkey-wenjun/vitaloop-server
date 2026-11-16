@@ -119,7 +119,7 @@ h1 {
 
 .hero-phone {
   display: block;
-  max-width: 400px;
+  max-width: 340px;
   margin-left: auto;
   border-radius: 26px;
   border: 1px solid var(--line);
