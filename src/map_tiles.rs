@@ -8,7 +8,7 @@ use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const HEADER_BYTES: usize = 127;
 const INITIAL_RANGE_BYTES: usize = 16 * 1024;
@@ -17,7 +17,10 @@ const MAX_DIRECTORY_CACHE: usize = 128;
 const MAX_TILE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TILE_CACHE_ENTRIES: usize = 4096;
 const MAX_TILE_BYTES: usize = 4 * 1024 * 1024;
-const DEFAULT_UPSTREAM: &str = "https://build.protomaps.com/20261109.pmtiles";
+/// Protomaps 每天生成一份世界包，只保留最近几天。写死日期过一周就会 404，
+/// 所以默认用 `{date}` 模板，启动时自动探测最近可用的构建。
+const DEFAULT_UPSTREAM: &str = "https://build.protomaps.com/{date}.pmtiles";
+const DISCOVERY_DAYS: i64 = 7;
 
 #[derive(Clone, Copy, Debug)]
 struct Header {
@@ -103,6 +106,8 @@ impl TileCache {
 
 pub struct MapTiles {
     upstream: String,
+    /// 模板解析后的实际地址；固定 URL 时与 `upstream` 相同。
+    resolved: Mutex<Option<String>>,
     agent: ureq::Agent,
     header: Mutex<Option<Header>>,
     directories: Mutex<HashMap<(u64, u64), Arc<Vec<Entry>>>>,
@@ -122,6 +127,7 @@ impl MapTiles {
             .build();
         Self {
             upstream,
+            resolved: Mutex::new(None),
             agent: config.into(),
             header: Mutex::new(None),
             directories: Mutex::new(HashMap::new()),
@@ -133,8 +139,74 @@ impl MapTiles {
         &self.upstream
     }
 
+    fn is_template(&self) -> bool {
+        self.upstream.contains("{date}")
+    }
+
+    /// 当前实际使用的上游地址。模板还没解析时先探测，固定 URL 直接返回。
+    fn current_upstream(&self) -> Result<String, String> {
+        if !self.is_template() {
+            return Ok(self.upstream.clone());
+        }
+        if let Some(url) = self.resolved.lock().unwrap().clone() {
+            return Ok(url);
+        }
+        let now_days = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs() as i64 / 86_400)
+            .unwrap_or(0);
+        let mut last_error = String::new();
+        for date in candidate_dates(now_days, DISCOVERY_DAYS) {
+            let url = self.upstream.replace("{date}", &date);
+            match self.probe(&url) {
+                Ok(true) => {
+                    *self.resolved.lock().unwrap() = Some(url.clone());
+                    return Ok(url);
+                }
+                Ok(false) => last_error = format!("{date} 不存在"),
+                Err(error) => last_error = error,
+            }
+        }
+        Err(format!("找不到最近可用的 Protomaps 构建：{last_error}"))
+    }
+
+    /// 只取 PMTiles 头部，确认这个日期的构建存在且格式正确。
+    fn probe(&self, url: &str) -> Result<bool, String> {
+        let mut response = match self
+            .agent
+            .get(url)
+            .header("Range", "bytes=0-127")
+            .header("User-Agent", "Vitaloop-map/1.0")
+            .call()
+        {
+            Ok(response) => response,
+            Err(ureq::Error::StatusCode(404)) => return Ok(false),
+            Err(error) => return Err(format!("探测 {url} 失败：{error}")),
+        };
+        let bytes = response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|error| format!("探测 {url} 失败：{error}"))?;
+        Ok(bytes.len() >= 8 && &bytes[..7] == b"PMTiles" && bytes[7] == 3)
+    }
+
+    /// 上游换了构建后，旧的目录/瓦片缓存都失效了。
+    fn reset_caches(&self) {
+        *self.header.lock().unwrap() = None;
+        self.directories.lock().unwrap().clear();
+        *self.tiles.lock().unwrap() = TileCache::new();
+    }
+
     pub fn prewarm(&self) -> Result<(), String> {
-        self.header().map(|_| ())
+        self.header().map(|_| ()).map_err(|error| error.message)
+    }
+
+    /// 日志里用的上游地址：模板已解析就报实际构建，否则报模板。
+    pub fn upstream_label(&self) -> String {
+        if let Some(url) = self.resolved.lock().unwrap().clone() {
+            return url;
+        }
+        self.upstream.clone()
     }
 
     pub fn style_json(&self, base_url: &str, dark: bool) -> String {
@@ -182,6 +254,19 @@ impl MapTiles {
 
     /// `Ok(None)` means the archive has no tile at this coordinate.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Arc<Vec<u8>>>, String> {
+        match self.tile_once(z, x, y) {
+            // 模板上游被 Protomaps 清理后，换最近一份重建缓存再试一次。
+            Err(error) if self.is_template() && error.not_found => {
+                *self.resolved.lock().unwrap() = None;
+                self.reset_caches();
+                self.tile_once(z, x, y).map_err(|error| error.message)
+            }
+            Err(error) => Err(error.message),
+            Ok(value) => Ok(value),
+        }
+    }
+
+    fn tile_once(&self, z: u8, x: u32, y: u32) -> Result<Option<Arc<Vec<u8>>>, TileError> {
         let key = (z, x, y);
         if let Some(hit) = self.tiles.lock().unwrap().get(&key) {
             return Ok(Some(hit));
@@ -215,17 +300,19 @@ impl MapTiles {
             directory_offset = header.leaf_offset + entry.offset;
             directory_length = entry.length;
         }
-        Err("PMTiles directory depth exceeded".into())
+        Err(TileError::other("PMTiles directory depth exceeded"))
     }
 
-    fn header(&self) -> Result<Header, String> {
+    fn header(&self) -> Result<Header, TileError> {
         if let Some(header) = *self.header.lock().unwrap() {
             return Ok(header);
         }
         let initial = self.fetch_range(0, INITIAL_RANGE_BYTES as u64)?;
-        let header = parse_header(&initial)?;
+        let header = parse_header(&initial).map_err(TileError::other)?;
         if header.root_length > 16 * 1024 * 1024 {
-            return Err("PMTiles root directory length is unreasonable".into());
+            return Err(TileError::other(
+                "PMTiles root directory length is unreasonable",
+            ));
         }
         let root = root_slice(&initial, header)
             .map(|raw| decompress(raw, header.internal_compression))
@@ -245,7 +332,7 @@ impl MapTiles {
         Ok(header)
     }
 
-    fn directory(&self, offset: u64, length: u64) -> Result<Arc<Vec<Entry>>, String> {
+    fn directory(&self, offset: u64, length: u64) -> Result<Arc<Vec<Entry>>, TileError> {
         let key = (offset, length);
         if let Some(hit) = self.directories.lock().unwrap().get(&key) {
             return Ok(Arc::clone(hit));
@@ -253,9 +340,9 @@ impl MapTiles {
         let raw = self.fetch_range(offset, length)?;
         let header = self.header()?;
         let decoded = decompress(&raw, header.internal_compression)?;
-        let entries = Arc::new(parse_directory(&decoded)?);
+        let entries = Arc::new(parse_directory(&decoded).map_err(TileError::other)?);
         if entries.is_empty() {
-            return Err("empty PMTiles directory".into());
+            return Err(TileError::other("empty PMTiles directory"));
         }
         self.cache_directory(key, Arc::clone(&entries));
         Ok(entries)
@@ -271,40 +358,94 @@ impl MapTiles {
         cache.insert(key, entries);
     }
 
-    fn fetch_range(&self, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+    fn fetch_range(&self, offset: u64, length: u64) -> Result<Vec<u8>, TileError> {
         if length == 0 || length > 16 * 1024 * 1024 {
-            return Err(format!("invalid Range length {length}"));
+            return Err(TileError::other(format!("invalid Range length {length}")));
         }
         let end = offset
             .checked_add(length - 1)
-            .ok_or_else(|| "Range overflow".to_string())?;
+            .ok_or_else(|| TileError::other("Range overflow"))?;
+        let url = self.current_upstream().map_err(TileError::other)?;
         let mut response = self
             .agent
-            .get(&self.upstream)
+            .get(&url)
             .header("Range", &format!("bytes={offset}-{end}"))
             .header("User-Agent", "Vitaloop-map/1.0")
             .call()
-            .map_err(|e| format!("upstream range request failed: {e}"))?;
+            .map_err(|error| match error {
+                ureq::Error::StatusCode(404) => TileError::not_found(),
+                other => TileError::other(format!("upstream range request failed: {other}")),
+            })?;
         let content_length = response
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         if content_length.is_some_and(|n| n > length) {
-            return Err("upstream ignored HTTP Range".into());
+            return Err(TileError::other("upstream ignored HTTP Range"));
         }
         let bytes = response
             .body_mut()
             .read_to_vec()
-            .map_err(|e| format!("upstream body failed: {e}"))?;
+            .map_err(|error| TileError::other(format!("upstream body failed: {error}")))?;
         if bytes.len() as u64 != length {
-            return Err(format!(
+            return Err(TileError::other(format!(
                 "short upstream range: wanted {length}, got {}",
                 bytes.len()
-            ));
+            )));
         }
         Ok(bytes)
     }
+}
+
+struct TileError {
+    not_found: bool,
+    message: String,
+}
+
+impl TileError {
+    fn not_found() -> Self {
+        Self {
+            not_found: true,
+            message: "upstream archive not found".into(),
+        }
+    }
+
+    fn other(message: impl Into<String>) -> Self {
+        Self {
+            not_found: false,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for TileError {
+    fn from(message: String) -> Self {
+        Self::other(message)
+    }
+}
+
+/// 从今天往前推 `days` 天，返回 `YYYYMMDD` 列表（新的在前）。
+fn candidate_dates(now_days: i64, days: i64) -> Vec<String> {
+    (0..=days)
+        .map(|back| {
+            let (year, month, day) = civil_from_days(now_days - back);
+            format!("{year:04}{month:02}{day:02}")
+        })
+        .collect()
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 fn root_slice<'a>(initial: &'a [u8], header: Header) -> Option<&'a [u8]> {
@@ -587,5 +728,19 @@ mod tests {
     fn invalid_coordinates_are_rejected() {
         assert_eq!(zxy_to_tile_id(0, 1, 0), None);
         assert_eq!(zxy_to_tile_id(27, 0, 0), None);
+    }
+
+    #[test]
+    fn candidate_dates_walk_back_from_today() {
+        // 2026-11-16 = 20783 天。
+        let dates = candidate_dates(20_783, 3);
+        assert_eq!(dates, vec!["20261116", "20261115", "20261114", "20261113"]);
+    }
+
+    #[test]
+    fn candidate_dates_cross_month_and_year_boundaries() {
+        // 2026-01-01 = 20454 天。
+        let dates = candidate_dates(20_454, 1);
+        assert_eq!(dates, vec!["20260101", "20251231"]);
     }
 }

@@ -77,7 +77,7 @@ fn main() {
         dem: DemTiles::from_env(),
         ephemeris: EphemerisService::from_env(),
     });
-    eprintln!("地图瓦片上游：{}", state.map.upstream());
+    eprintln!("地图瓦片上游：{}", state.map.upstream_label());
     eprintln!("等高线 DEM 上游：{}", state.dem.upstream());
     eprintln!("星历上游：{}", state.ephemeris.upstream_label());
     let map_warm = Arc::clone(&state);
