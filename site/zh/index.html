@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vitaloop — 本地优先的 Android 健康与运动看板</title>
-<meta name="description" content="Vitaloop（元环）是一款免费开源的 Android 健康与运动看板：直连华为手表同步，数据存在本地 SQLite，云端同步可选且完全自托管。">
+<meta name="description" content="Vitaloop（元环）是一款免费的 Android 健康与运动看板：直连华为手表同步，数据存在本地 SQLite，云端同步可选且完全自托管。">
 <link rel="canonical" href="https://vitaloop.awen.me/zh/">
 <link rel="alternate" hreflang="zh-CN" href="https://vitaloop.awen.me/zh/">
 <link rel="alternate" hreflang="en" href="https://vitaloop.awen.me/">
@@ -41,17 +41,17 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">v0.1 预览版 · AGPL-3.0</span>
+        <span class="eyebrow">v0.1 预览版</span>
         <h1>你的手表数据，<br>留在你自己的机器上。</h1>
         <p class="lede">
-          Vitaloop（元环）是一款免费开源的 Android 健康与运动应用。
+          Vitaloop（元环）是一款免费的 Android 健康与运动应用。
           它通过蓝牙直连华为手表读取数据，全部写进本地 SQLite；
           只有当你自己部署了服务端时，才会把数据同步上去。
         </p>
         <div class="actions">
           <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">下载 APK</a>
-          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-app">应用源码</a>
-          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-server">服务端</a>
+          <a class="btn" href="#features">功能介绍</a>
+          <a class="btn" href="#server">自托管</a>
         </div>
       </div>
       <a class="hero-phone" href="../assets/screenshots/home-light-zh.webp" data-zoom>
@@ -149,14 +149,12 @@
         </p>
       </div>
       <div>
-        <h2>从源码构建</h2>
-        <p class="section-note">Flutter 3.47+、Rust 1.85+、JDK 21、Android SDK 35。</p>
-        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-app
-cd vitaloop-app
-flutter pub get
-flutter gen-l10n
-flutter build apk --release \
-  --target-platform android-arm64 --split-per-abi</code></pre>
+        <h2>源码</h2>
+        <p class="section-note">暂未公开。</p>
+        <p>
+          应用和服务端都是 Rust + Flutter 写的，但仓库目前是私有的。
+          开放后会在这里补上链接；现在请直接安装上面的体验版 APK。
+        </p>
       </div>
     </div>
   </section>
@@ -179,13 +177,10 @@ flutter build apk --release \
       <div>
         <h2>部署</h2>
         <p class="section-note">Docker Compose 会编译 musl 二进制，并运行在 scratch 镜像里。</p>
-        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server
-cd vitaloop-server
-docker compose up -d   # 127.0.0.1:8793，数据卷 vitaloop-data</code></pre>
-        <p class="callout">
-          然后在前面套一层 HTTPS，把应用指向你自己的域名：
-          <code>设置 → 账号 → 服务器</code>，或构建时加
-          <code>--dart-define=VITALOOP_CLOUD_URL=https://sync.example.com</code>。
+        <p>
+          服务端暂时还没公开。公开后会是一个监听 <code>127.0.0.1:8793</code> 的
+          静态 Rust 二进制，只挂一个数据卷。前面套一层 HTTPS，再把应用里的
+          <code>设置 → 账号 → 服务器</code> 指向你自己的域名即可。
         </p>
       </div>
     </div>
@@ -194,7 +189,7 @@ docker compose up -d   # 127.0.0.1:8793，数据卷 vitaloop-data</code></pre>
   <section>
     <div class="wrap">
       <h2>隐私模型</h2>
-      <p class="section-note">公开源码与构建产物不包含默认云服务、星历服务、API Key 或签名密钥。</p>
+      <p class="section-note">体验版构建不包含默认云服务、星历服务、API Key 或签名密钥。</p>
       <div class="cards">
         <div class="card">
           <h3>默认只在本地</h3>
@@ -215,9 +210,7 @@ docker compose up -d   # 127.0.0.1:8793，数据卷 vitaloop-data</code></pre>
 
 <footer class="site">
   <div class="wrap">
-    <span>Vitaloop · AGPL-3.0</span>
-    <a href="https://github.com/monkey-wenjun/vitaloop-app">应用源码</a>
-    <a href="https://github.com/monkey-wenjun/vitaloop-server">服务端源码</a>
+    <span>Vitaloop · v0.1 预览版</span>
     <a href="https://www.awen.me">博客</a>
     <a href="mailto:hi@awen.me">hi@awen.me</a>
     <a href="../" lang="en">English</a>

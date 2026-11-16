@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vitaloop — local-first health & workout dashboard for Android</title>
-<meta name="description" content="Vitaloop is a free, open-source, local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted Rust server.">
+<meta name="description" content="Vitaloop is a free, local-first health and workout dashboard for Android, with direct Huawei watch sync and an optional self-hosted Rust server.">
 <link rel="canonical" href="https://vitaloop.awen.me/">
 <link rel="alternate" hreflang="zh-CN" href="https://vitaloop.awen.me/zh/">
 <link rel="alternate" hreflang="en" href="https://vitaloop.awen.me/">
@@ -41,18 +41,18 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">v0.1 preview · AGPL-3.0</span>
+        <span class="eyebrow">v0.1 preview</span>
         <h1>Your watch data,<br>on your own machine.</h1>
         <p class="lede">
-          Vitaloop is a free and open-source Android app for tracking health and
+          Vitaloop is a free Android app for tracking health and
           workouts. It reads Huawei wearables directly over Bluetooth, keeps
           everything in a local SQLite database, and syncs to a server only if
           you run one yourself.
         </p>
         <div class="actions">
           <a class="btn primary" href="https://vitaloop.awen.me/apk/vitaloop-6027.apk">Download APK</a>
-          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-app">Source code</a>
-          <a class="btn" href="https://github.com/monkey-wenjun/vitaloop-server">Server</a>
+          <a class="btn" href="#features">Features</a>
+          <a class="btn" href="#server">Self-host</a>
         </div>
       </div>
       <a class="hero-phone" href="assets/screenshots/home-light-en.webp" data-zoom>
@@ -158,14 +158,13 @@
         </p>
       </div>
       <div>
-        <h2>Build from source</h2>
-        <p class="section-note">Flutter 3.47+, Rust 1.85+, JDK 21, Android SDK 35.</p>
-        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-app
-cd vitaloop-app
-flutter pub get
-flutter gen-l10n
-flutter build apk --release \
-  --target-platform android-arm64 --split-per-abi</code></pre>
+        <h2>Source code</h2>
+        <p class="section-note">Not public yet.</p>
+        <p>
+          The app and the server are both written in Rust plus Flutter, but the
+          repositories are private for now. This page will link to them once
+          they open; until then, use the preview APK above.
+        </p>
       </div>
     </div>
   </section>
@@ -191,13 +190,11 @@ flutter build apk --release \
       <div>
         <h2>Deploy</h2>
         <p class="section-note">Docker Compose builds a musl binary and runs it on a scratch image.</p>
-        <pre><code>git clone https://github.com/monkey-wenjun/vitaloop-server
-cd vitaloop-server
-docker compose up -d   # 127.0.0.1:8793, volume vitaloop-data</code></pre>
-        <p class="callout">
-          Then put HTTPS in front of it and point the app at your own domain:
-          <code>Settings → Account → Server</code>, or build with
-          <code>--dart-define=VITALOOP_CLOUD_URL=https://sync.example.com</code>.
+        <p>
+          The server is not published yet. When it is, it will be a single
+          static Rust binary listening on <code>127.0.0.1:8793</code>, with one
+          data volume. Put HTTPS in front and point the app at your own domain
+          from <code>Settings → Account → Server</code>.
         </p>
       </div>
     </div>
@@ -206,7 +203,7 @@ docker compose up -d   # 127.0.0.1:8793, volume vitaloop-data</code></pre>
   <section>
     <div class="wrap">
       <h2>Privacy model</h2>
-      <p class="section-note">The public source and build ship without a default cloud server, ephemeris server, API key, or signing key.</p>
+      <p class="section-note">The preview build ships without a default cloud server, ephemeris server, API key, or signing key.</p>
       <div class="cards">
         <div class="card">
           <h3>Local-only by default</h3>
@@ -230,9 +227,7 @@ docker compose up -d   # 127.0.0.1:8793, volume vitaloop-data</code></pre>
 
 <footer class="site">
   <div class="wrap">
-    <span>Vitaloop · AGPL-3.0</span>
-    <a href="https://github.com/monkey-wenjun/vitaloop-app">App source</a>
-    <a href="https://github.com/monkey-wenjun/vitaloop-server">Server source</a>
+    <span>Vitaloop · v0.1 preview</span>
     <a href="https://www.awen.me">Blog</a>
     <a href="mailto:hi@awen.me">hi@awen.me</a>
     <a href="zh/" lang="zh-CN">简体中文</a>
