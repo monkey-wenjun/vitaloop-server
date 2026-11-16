@@ -99,9 +99,9 @@ server {
 | `PMTILES_URL` | 地图瓦片上游（Protomaps 月度构建），默认指向一个固定版本 |
 | `DEM_URL` | `/dem` 与 `/contours` 的 DEM 上游（terrarium 编码），默认 AWS `elevation-tiles-prod`；两者共用一份进程内缓存，同一块地形只拉一次 |
 | `PUBLIC_BASE_URL` | 对外地址；不设则按请求 `Host` / `X-Forwarded-Proto` 推断 |
-| `VITALOOP_BLOG_TOKEN` | `/blog/daily-fitness` 的访问 token，不设则路由关闭 |
+| `VITALOOP_BLOG_TOKEN` | 博客账号的只读 Bearer token（`/v1/workouts`、`/mcp` 用），不设则只能走会话 |
 | `VITALOOP_BLOG_ACCOUNT_ID` | 博客路由暴露的账号 id |
-| `BLOG_HEALTH_ACCOUNT_ID` | 直接指定博客账号，优先级高于上者 |
+| `BLOG_HEALTH_ACCOUNT_ID` | 直接指定 `/blog/*` 投影的账号，优先级高于上者 |
 | `EPHEMERIS_UPSTREAM` | RINEX 小时文件站点根目录，用于自算星历 |
 | `EPHEMERIS_RINEX` | 本地 RINEX 文件路径；设置后跳过上游下载 |
 
@@ -114,6 +114,39 @@ server {
 <data>/accounts/<id>.json                         账号记录
 <data>/accounts/sessions                          token\taccount_id\texp_unix
 ```
+
+## 博客睡眠投影
+
+`GET /blog/sleep?days=30`（`days` 1–365，默认 30）返回该账号最近 N 晚的睡眠，
+口径与 App 首页一致：每晚按醒来日期（东八区）归组，总时长取官方锚点
+`anchor_min` 之和，`sleep_bed` 提供上床/醒来时间、评分与效率，
+`sleep_stages` 只用来画最近一晚的分期色块。
+
+```json
+{
+  "code": 0,
+  "data": [{
+    "date": "2026-11-16",
+    "start_time": 1794748080000, "end_time": 1794782640000,
+    "duration": 32580, "deep": 7080, "light": 20820, "rem": 4680,
+    "awake": 1200, "nap": 0, "score": 81, "efficiency": 93,
+    "hrv_avg": 52, "hrv_min_baseline": 38, "hrv_max_baseline": 72,
+    "hrv_delta": 0, "breathing_avg": 12.5
+  }],
+  "detail": {
+    "date": "2026-11-16",
+    "start_time": 1794748080000, "end_time": 1794783300000,
+    "duration": 32580, "deep": 7080, "light": 20820, "rem": 4680, "awake": 1200,
+    "longest_band_sec": 6300,
+    "stages": [{"stage": "light", "start_ms": 1794749400000, "end_ms": 1794750660000}],
+    "hrv": {"avg": 52, "min_baseline": 38, "max_baseline": 72, "delta": 0},
+    "breathing": {"avg": 12.5}
+  }
+}
+```
+
+时长字段单位为秒（`stages` 里的时间戳是毫秒）。`data` 按醒来时间降序；
+`detail` 只覆盖最新一晚，没有数据时是 `{"has_data": false}`。
 
 ## MCP
 

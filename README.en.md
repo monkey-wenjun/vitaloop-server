@@ -123,9 +123,9 @@ server {
 | `PMTILES_URL` | Map tile upstream (Protomaps monthly build); defaults to a pinned version |
 | `DEM_URL` | DEM upstream for `/dem` and `/contours` (terrarium encoding), defaults to AWS `elevation-tiles-prod`; both share one in-process cache, so each terrain tile is fetched once |
 | `PUBLIC_BASE_URL` | Public base URL; inferred from the request `Host` / `X-Forwarded-Proto` when unset |
-| `VITALOOP_BLOG_TOKEN` | Access token for `/blog/daily-fitness`; the route is disabled when unset |
+| `VITALOOP_BLOG_TOKEN` | Read-only bearer token for the blog account (`/v1/workouts`, `/mcp`); without it only interactive sessions work |
 | `VITALOOP_BLOG_ACCOUNT_ID` | Account id exposed by the blog route |
-| `BLOG_HEALTH_ACCOUNT_ID` | Sets the blog account directly; takes precedence over the previous one |
+| `BLOG_HEALTH_ACCOUNT_ID` | Sets the account projected by `/blog/*` directly; takes precedence over the previous one |
 | `EPHEMERIS_UPSTREAM` | Root of the hourly RINEX site used to compute ephemeris |
 | `EPHEMERIS_RINEX` | Local RINEX file path; when set, upstream download is skipped |
 
@@ -138,6 +138,41 @@ Data layout:
 <data>/accounts/<id>.json                          account record
 <data>/accounts/sessions                          token\taccount_id\texp_unix
 ```
+
+## Blog sleep projection
+
+`GET /blog/sleep?days=30` (`days` 1–365, default 30) returns the account's last N
+nights, using the same rules as the app home screen: nights are grouped by
+wake-up date (UTC+8), total sleep comes from the official `anchor_min` values,
+`sleep_bed` supplies bed / wake time, score and efficiency, and `sleep_stages`
+is only used to draw the latest night's stage bands.
+
+```json
+{
+  "code": 0,
+  "data": [{
+    "date": "2026-11-16",
+    "start_time": 1794748080000, "end_time": 1794782640000,
+    "duration": 32580, "deep": 7080, "light": 20820, "rem": 4680,
+    "awake": 1200, "nap": 0, "score": 81, "efficiency": 93,
+    "hrv_avg": 52, "hrv_min_baseline": 38, "hrv_max_baseline": 72,
+    "hrv_delta": 0, "breathing_avg": 12.5
+  }],
+  "detail": {
+    "date": "2026-11-16",
+    "start_time": 1794748080000, "end_time": 1794783300000,
+    "duration": 32580, "deep": 7080, "light": 20820, "rem": 4680, "awake": 1200,
+    "longest_band_sec": 6300,
+    "stages": [{"stage": "light", "start_ms": 1794749400000, "end_ms": 1794750660000}],
+    "hrv": {"avg": 52, "min_baseline": 38, "max_baseline": 72, "delta": 0},
+    "breathing": {"avg": 12.5}
+  }
+}
+```
+
+Durations are seconds (`stages` timestamps are milliseconds). `data` is sorted
+newest first; `detail` only covers the latest night and is
+`{"has_data": false}` when there is nothing to show.
 
 ## MCP
 
