@@ -10,6 +10,11 @@ services:
       - "127.0.0.1:8793:8793"
     volumes:
       - vitaloop-data:/data
+    # 博客只读账号（VITALOOP_BLOG_TOKEN / VITALOOP_BLOG_ACCOUNT_ID）放在本机
+    # 0600 的 blog.env 里，不进仓库。重建容器时靠 env_file 恢复，避免只读接口又变 401。
+    # 不需要博客只读接入时，可以不建这个文件，或删掉下面一行。
+    env_file:
+      - ./blog.env
     environment:
       # 反向代理的对外地址；不设则按请求 Host 头推断。
       # PUBLIC_BASE_URL: https://example.com

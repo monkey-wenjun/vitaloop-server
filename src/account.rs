@@ -1665,6 +1665,7 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 .unwrap_or(50)
                 .clamp(1, 500);
             let marathon_only = query.split('&').any(|part| part == "marathon=1");
+            let light = query.split('&').any(|part| part == "light=1");
             let workouts = load_workouts(root, &id).unwrap_or_else(|| Arc::new(Vec::new()));
             let mut ordered: Vec<&Json> = workouts
                 .iter()
@@ -1676,7 +1677,17 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             let total = ordered.len();
-            let selected: Vec<Json> = ordered.into_iter().take(limit).cloned().collect();
+            let selected: Vec<Json> = ordered
+                .into_iter()
+                .take(limit)
+                .map(|workout| {
+                    if light {
+                        light_workout(workout)
+                    } else {
+                        workout.clone()
+                    }
+                })
+                .collect();
             Some(json_reply(
                 200,
                 Json::Object(vec![
@@ -1781,6 +1792,52 @@ fn workout_start(workout: &Json) -> f64 {
         .or_else(|| workout.get("startMs"))
         .and_then(Json::as_f64)
         .unwrap_or(0.0)
+}
+
+/// 列表页只需要索引字段。整行带着 track/samples/detail，几百条加起来有几十兆，
+/// 博客服务端每次翻页都拉整包既慢又浪费内存；`light=1` 只投影展示用得到的列。
+const LIGHT_WORKOUT_FIELDS: &[&str] = &[
+    "id",
+    "source",
+    "sport",
+    "start_ms",
+    "end_ms",
+    "distance_m",
+    "calories",
+    "avg_hr",
+    "max_hr",
+    "steps",
+    "load",
+    "total_time_sec",
+    "elevation_gain",
+    "avg_pace_sec",
+    "cadence",
+    "vo2max",
+    "training_points",
+    "type_code",
+    "max_altitude",
+    "min_altitude",
+    "start_temp_c",
+    "start_humidity",
+    "aerobic_effect",
+    "anaerobic_effect",
+    "recovery_time_min",
+];
+
+fn light_workout(workout: &Json) -> Json {
+    let Some(items) = workout.as_object() else {
+        return Json::Null;
+    };
+    let fields = LIGHT_WORKOUT_FIELDS
+        .iter()
+        .filter_map(|name| {
+            items
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(key, value)| (key.clone(), value.clone()))
+        })
+        .collect();
+    Json::Object(fields)
 }
 
 fn is_marathon_workout(workout: &Json) -> bool {
@@ -2322,6 +2379,24 @@ mod tests {
         assert_eq!(parsed.get("total").and_then(Json::as_f64), Some(1.0));
         let workouts = parsed.get("workouts").and_then(Json::as_array).unwrap();
         assert_eq!(workouts[0].get("id").and_then(Json::as_str), Some("w-mar"));
+
+        // light=1 只回列表字段：轨迹/采样/详情这些大列不能出现在列表响应里。
+        let light = Request {
+            method: "GET".into(),
+            path: "/v1/workouts?limit=500&light=1".into(),
+            headers: headers.clone(),
+            body: Vec::new(),
+        };
+        let (code, _, body) = route(&light, &root).unwrap();
+        assert_eq!(code, 200);
+        let parsed = json::parse(std::str::from_utf8(&body).unwrap()).unwrap();
+        assert_eq!(parsed.get("total").and_then(Json::as_f64), Some(3.0));
+        let workouts = parsed.get("workouts").and_then(Json::as_array).unwrap();
+        assert_eq!(workouts.len(), 3);
+        assert!(workouts[0].get("distance_m").is_some());
+        assert!(workouts[0].get("track_json").is_none());
+        assert!(workouts[0].get("samples_json").is_none());
+        assert!(workouts[0].get("detail_json").is_none());
 
         let detail = Request {
             method: "GET".into(),
