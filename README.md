@@ -98,7 +98,7 @@ server {
 
 | 环境变量 | 说明 |
 |---|---|
-| `PMTILES_URL` | 地图瓦片上游（Protomaps 月度构建），默认指向一个固定版本 |
+| `PMTILES_URL` | 地图瓦片上游（Protomaps 每日构建），默认 `https://build.protomaps.com/{date}.pmtiles`，启动时解析成最近可用的一份；也可填固定地址 |
 | `DEM_URL` | `/dem` 与 `/contours` 的 DEM 上游（terrarium 编码），默认 AWS `elevation-tiles-prod`；两者共用一份进程内缓存，同一块地形只拉一次 |
 | `PUBLIC_BASE_URL` | 对外地址；不设则按请求 `Host` / `X-Forwarded-Proto` 推断 |
 | `VITALOOP_BLOG_TOKEN` | 博客账号的只读 Bearer token（`/v1/workouts`、`/mcp` 用），不设则只能走会话 |

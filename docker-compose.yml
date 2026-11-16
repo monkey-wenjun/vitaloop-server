@@ -22,7 +22,8 @@ services:
     environment:
       # 反向代理的对外地址；不设则按请求 Host 头推断。
       # PUBLIC_BASE_URL: https://example.com
-      PMTILES_URL: https://build.protomaps.com/20261109.pmtiles
+      # {date} 由服务启动时解析成最近可用的 Protomaps 构建。
+      PMTILES_URL: https://build.protomaps.com/{date}.pmtiles
 
 volumes:
   vitaloop-data:

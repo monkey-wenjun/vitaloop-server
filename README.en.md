@@ -123,7 +123,7 @@ server {
 
 | Variable | Description |
 |---|---|
-| `PMTILES_URL` | Map tile upstream (Protomaps monthly build); defaults to a pinned version |
+| `PMTILES_URL` | Map tile upstream (Protomaps daily builds). Defaults to `https://build.protomaps.com/{date}.pmtiles`, resolved to the newest available build at startup; a fixed URL also works |
 | `DEM_URL` | DEM upstream for `/dem` and `/contours` (terrarium encoding), defaults to AWS `elevation-tiles-prod`; both share one in-process cache, so each terrain tile is fetched once |
 | `PUBLIC_BASE_URL` | Public base URL; inferred from the request `Host` / `X-Forwarded-Proto` when unset |
 | `VITALOOP_BLOG_TOKEN` | Read-only bearer token for the blog account (`/v1/workouts`, `/mcp`); without it only interactive sessions work |

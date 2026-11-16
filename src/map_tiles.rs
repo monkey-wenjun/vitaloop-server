@@ -135,10 +135,6 @@ impl MapTiles {
         }
     }
 
-    pub fn upstream(&self) -> &str {
-        &self.upstream
-    }
-
     fn is_template(&self) -> bool {
         self.upstream.contains("{date}")
     }
@@ -206,7 +202,9 @@ impl MapTiles {
         if let Some(url) = self.resolved.lock().unwrap().clone() {
             return url;
         }
-        self.upstream.clone()
+        // 启动日志里直接给出实际日期，排查 404 时不用再猜。
+        self.current_upstream()
+            .unwrap_or_else(|_| self.upstream.clone())
     }
 
     pub fn style_json(&self, base_url: &str, dark: bool) -> String {
@@ -732,8 +730,8 @@ mod tests {
 
     #[test]
     fn candidate_dates_walk_back_from_today() {
-        // 2026-11-16 = 20783 天。
-        let dates = candidate_dates(20_783, 3);
+        // 2026-11-16 起往前推 3 天。
+        let dates = candidate_dates(20_773, 3);
         assert_eq!(dates, vec!["20261116", "20261115", "20261114", "20261113"]);
     }
 

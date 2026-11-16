@@ -41,7 +41,9 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/vitaloop-serve
 VOLUME ["/data"]
 EXPOSE 8793
 
-# 地图瓦片上游（Protomaps 月度构建），部署时可用 -e PMTILES_URL=... 覆盖。
-ENV PMTILES_URL=https://build.protomaps.com/20261109.pmtiles
+# 地图瓦片上游（Protomaps 每日构建，只保留最近几天）。
+# {date} 会在启动时解析成最近可用的一份，避免写死日期过期后 404。
+# 部署时可用 -e PMTILES_URL=... 覆盖成固定地址。
+ENV PMTILES_URL=https://build.protomaps.com/{date}.pmtiles
 
 ENTRYPOINT ["/vitaloop-server", "--bind", "0.0.0.0:8793", "--data", "/data"]
