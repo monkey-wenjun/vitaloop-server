@@ -31,7 +31,9 @@
       <a href="#features">Features</a>
       <a href="#screenshots">Screenshots</a>
       <a href="#install">Install</a>
+      <a href="#pairing">Pairing</a>
       <a href="#server">Self-host</a>
+      <a href="#mcp">MCP</a>
       <a href="zh/" lang="zh-CN">中文</a>
     </nav>
   </div>
@@ -148,8 +150,9 @@
           <li>Allow installs from the browser or file manager you used.</li>
           <li>Grant location, background location, nearby devices, and
             notification permissions so tracks and watch sync keep running.</li>
-          <li>Pair the watch from <strong>Settings → Huawei watch</strong>; the
-            app walks through the Huawei auth-key flow.</li>
+          <li>Pair the watch from <strong>Settings → Huawei watch</strong>; see
+            the <a href="#pairing">pairing guide</a> for the Huawei auth-key
+            flow.</li>
         </ul>
         <p class="callout warn">
           The demo APK points at the author's server for update checks and map
@@ -169,6 +172,42 @@
     </div>
   </section>
 
+  <section id="pairing">
+    <div class="wrap">
+      <h2>Huawei watch pairing</h2>
+      <p class="section-note">Classic Bluetooth RFCOMM with HiChain authentication. Keep the watch nearby and charged.</p>
+      <div class="cards">
+        <div class="card">
+          <h3>First-time pairing</h3>
+          <ol class="plain">
+            <li>Pair the watch to the phone in the system Bluetooth settings.</li>
+            <li>Open Vitaloop → <strong>Watch</strong>, select the watch, and tap <strong>Connect</strong>.</li>
+            <li>Enter the Huawei account currently bound to the watch.</li>
+            <li>Allow the request on the watch. Sync then starts automatically.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>Migrate without a reset</h3>
+          <p>If the watch is already bound to Huawei Health and you do not want
+          to reset it, install the legacy <code>awen-sync</code> app once to
+          migrate its HiChain credentials. Then select the watch in Vitaloop and
+          connect it.</p>
+        </div>
+        <div class="card">
+          <h3>Keep the pairing stable</h3>
+          <p>Do not unbind the watch in Huawei Health: that invalidates the
+          authentication key. Close or uninstall Huawei Health while syncing so
+          the two apps do not fight for the Bluetooth connection.</p>
+        </div>
+      </div>
+      <ul class="plain">
+        <li><strong>Authentication key negotiation failed</strong> — the watch already has credentials that Vitaloop does not. Migrate them, or reset and pair for the first time.</li>
+        <li><strong>Connected but no data</strong> — check the Huawei account on the Watch page, reconnect, and inspect the connection log.</li>
+        <li><strong>No watch confirmation</strong> — move the watch closer and retry; the connection log shows the failed step.</li>
+      </ul>
+    </div>
+  </section>
+
   <section id="server">
     <div class="wrap split">
       <div>
@@ -181,8 +220,6 @@
             delta log, merged on read.</li>
           <li><strong>Workouts</strong> — cached per account with list and detail
             endpoints.</li>
-          <li><strong>MCP</strong> — a read-only Model Context Protocol endpoint
-            so an AI assistant can query the same data with the same token.</li>
           <li><strong>Maps</strong> — PMTiles style/tile proxy, DEM tiles, and
             contour tiles computed from public elevation data.</li>
         </ul>
@@ -197,6 +234,64 @@
           from <code>Settings → Account → Server</code>.
         </p>
       </div>
+    </div>
+  </section>
+
+  <section id="mcp">
+    <div class="wrap">
+      <h2>MCP endpoint</h2>
+      <p class="section-note">Streamable HTTP + JSON-RPC 2.0 at <code>/mcp</code>. One POST returns one JSON-RPC response; no SSE.</p>
+      <div class="split">
+        <div>
+          <h3>Connect an MCP client</h3>
+          <pre><code>{
+  "url": "https://your-vitaloop-domain/mcp",
+  "headers": {
+    "Authorization": "Bearer &lt;session-token&gt;"
+  }
+}</code></pre>
+          <p class="callout warn">
+            The Bearer session grants read access to all health data for that
+            account. Use HTTPS, store the token locally in the MCP client, and
+            never publish it. Protocol versions <code>2024-11-05</code>,
+            <code>2025-03-26</code>, and <code>2025-06-18</code> are supported.
+          </p>
+        </div>
+        <div>
+          <h3>Methods and errors</h3>
+          <ul class="plain">
+            <li><code>initialize</code>, <code>notifications/initialized</code>, <code>ping</code>, <code>tools/list</code>, and <code>tools/call</code>.</li>
+            <li>Results return <code>structuredContent</code> and equivalent compact JSON in <code>content[0].text</code>.</li>
+            <li>Error codes: parse <code>-32700</code>, invalid request <code>-32600</code>, unknown method <code>-32601</code>, invalid params <code>-32602</code>, auth <code>-32001</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Tool</th><th>Returns</th><th>Arguments</th></tr></thead>
+          <tbody>
+            <tr><td><code>health_summary</code></td><td>Aggregated recent overview</td><td><code>days</code> 1–3650, default 7</td></tr>
+            <tr><td><code>blood_pressure</code></td><td>Blood-pressure records</td><td rowspan="6"><code>from_ms</code>, <code>to_ms</code>, <code>limit</code></td></tr>
+            <tr><td><code>blood_glucose</code></td><td>Glucose records</td></tr>
+            <tr><td><code>weight</code></td><td>Weight and body composition</td></tr>
+            <tr><td><code>temperature</code></td><td>Skin/core temperature points</td></tr>
+            <tr><td><code>hrv</code></td><td>HRV records</td></tr>
+            <tr><td><code>stress</code></td><td>Daily stress</td></tr>
+            <tr><td><code>spo2</code></td><td>Daily SpO2</td><td><code>from_ms</code>, <code>to_ms</code>, <code>limit</code></td></tr>
+            <tr><td><code>heart_rate</code></td><td>Heart-rate samples</td><td>Same; defaults to the last 24 hours</td></tr>
+            <tr><td><code>metric_points</code></td><td>Generic metric series</td><td>Same plus <code>metric</code></td></tr>
+            <tr><td><code>sleep</code></td><td>Sessions, bed data, and stages</td><td rowspan="3"><code>from_ms</code>, <code>to_ms</code>, <code>limit</code></td></tr>
+            <tr><td><code>daily_metrics</code></td><td>Daily summaries</td></tr>
+            <tr><td><code>workouts</code></td><td>Workout records</td></tr>
+            <tr><td><code>query_table</code></td><td>Any whitelisted read-only table</td><td><code>table</code> plus the time window and limit</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="section-note">
+        Timestamps are Unix milliseconds. Daily summaries use <code>date_day</code> (epoch days).
+        <code>limit</code> defaults to 200 and caps at 2000; rows are newest-first. Values are returned
+        in source units and column names. <code>query_table</code> only accepts health-table names.
+      </p>
     </div>
   </section>
 

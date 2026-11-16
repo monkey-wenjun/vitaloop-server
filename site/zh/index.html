@@ -31,7 +31,9 @@
       <a href="#features">功能</a>
       <a href="#screenshots">截图</a>
       <a href="#install">安装</a>
+      <a href="#pairing">配对</a>
       <a href="#server">自托管</a>
+      <a href="#mcp">MCP</a>
       <a href="../" lang="en">English</a>
     </nav>
   </div>
@@ -141,7 +143,8 @@
           <li>下载签名后的 APK，在手机上打开安装。</li>
           <li>允许你使用的浏览器或文件管理器安装应用。</li>
           <li>授予定位、后台定位、附近设备与通知权限，轨迹记录和手表同步才能持续运行。</li>
-          <li>在<strong>设置 → 华为手表</strong>里配对；应用会引导完成华为认证密钥流程。</li>
+          <li>在<strong>设置 → 华为手表</strong>里配对；华为认证密钥流程见
+            <a href="#pairing">配对指南</a>。</li>
         </ul>
         <p class="callout warn">
           演示版 APK 只把作者自己的服务器用于更新检查和地图瓦片。
@@ -159,6 +162,40 @@
     </div>
   </section>
 
+  <section id="pairing">
+    <div class="wrap">
+      <h2>华为手表配对</h2>
+      <p class="section-note">经典蓝牙 RFCOMM + HiChain 认证。配对时请保持手表在场且电量充足。</p>
+      <div class="cards">
+        <div class="card">
+          <h3>首次配对</h3>
+          <ol class="plain">
+            <li>先在系统蓝牙设置里把手表和手机配对。</li>
+            <li>打开 Vitaloop → <strong>手表</strong>，选择手表并点击<strong>连接</strong>。</li>
+            <li>输入手表当前绑定的华为账号。</li>
+            <li>在手表上确认允许，同步随后自动开始。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>免恢复出厂迁移</h3>
+          <p>如果手表已绑定华为运动健康，又不想恢复出厂，可先安装旧版
+          <code>awen-sync</code> 把 HiChain 凭据迁过来。之后在 Vitaloop 里选择
+          手表并连接。</p>
+        </div>
+        <div class="card">
+          <h3>保持连接稳定</h3>
+          <p>不要在华为运动健康里解绑手表，否则认证密钥会作废。同步期间关闭或
+          卸载官方应用，避免两端争抢蓝牙连接。</p>
+        </div>
+      </div>
+      <ul class="plain">
+        <li><strong>Authentication key negotiation failed</strong> — 手表已有 Vitaloop 没有的凭据；先迁移凭据，或恢复出厂后首次配对。</li>
+        <li><strong>已连接但不同步</strong> — 核对手表页的华为账号，重新连接，并查看连接日志。</li>
+        <li><strong>手表迟迟不弹确认</strong> — 把手表贴近手机重试；连接日志会显示卡在哪一步。</li>
+      </ul>
+    </div>
+  </section>
+
   <section id="server">
     <div class="wrap split">
       <div>
@@ -168,8 +205,6 @@
           <li><strong>账号</strong> — 邮箱 + 密码，加盐 SHA-256 迭代 60k 轮，30 天 Bearer 会话。</li>
           <li><strong>同步</strong> — 全量健康快照加只追加的增量日志，读取时合并。</li>
           <li><strong>运动</strong> — 按账号缓存，提供列表与详情接口。</li>
-          <li><strong>MCP</strong> — 只读的 Model Context Protocol 接口，
-            AI 助手可以用同一个 token 查询同一份数据。</li>
           <li><strong>地图</strong> — PMTiles 样式/瓦片代理、DEM 瓦片，
             以及用公开高程数据现算的等高线瓦片。</li>
         </ul>
@@ -183,6 +218,64 @@
           <code>设置 → 账号 → 服务器</code> 指向你自己的域名即可。
         </p>
       </div>
+    </div>
+  </section>
+
+  <section id="mcp">
+    <div class="wrap">
+      <h2>MCP 接口</h2>
+      <p class="section-note">Streamable HTTP + JSON-RPC 2.0，地址为 <code>/mcp</code>。一次 POST 返回一条 JSON-RPC 响应，不使用 SSE。</p>
+      <div class="split">
+        <div>
+          <h3>连接 MCP 客户端</h3>
+          <pre><code>{
+  "url": "https://your-vitaloop-domain/mcp",
+  "headers": {
+    "Authorization": "Bearer &lt;session-token&gt;"
+  }
+}</code></pre>
+          <p class="callout warn">
+            Bearer 会话能读取该账号的全部健康数据。请走 HTTPS、把 token 保存在
+            本地 MCP 客户端里，并且不要发布或转发。支持的协议版本为
+            <code>2024-11-05</code>、<code>2025-03-26</code> 和
+            <code>2025-06-18</code>。
+          </p>
+        </div>
+        <div>
+          <h3>方法与错误码</h3>
+          <ul class="plain">
+            <li><code>initialize</code>、<code>notifications/initialized</code>、<code>ping</code>、<code>tools/list</code>、<code>tools/call</code>。</li>
+            <li>结果同时返回 <code>structuredContent</code>，以及 <code>content[0].text</code> 里的等价紧凑 JSON。</li>
+            <li>错误码：解析失败 <code>-32700</code>，非法请求 <code>-32600</code>，未知方法 <code>-32601</code>，参数错误 <code>-32602</code>，鉴权失败 <code>-32001</code>。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>工具</th><th>返回内容</th><th>参数</th></tr></thead>
+          <tbody>
+            <tr><td><code>health_summary</code></td><td>近 N 天健康总览</td><td><code>days</code>，1–3650，默认 7</td></tr>
+            <tr><td><code>blood_pressure</code></td><td>血压记录</td><td rowspan="6"><code>from_ms</code>、<code>to_ms</code>、<code>limit</code></td></tr>
+            <tr><td><code>blood_glucose</code></td><td>血糖记录</td></tr>
+            <tr><td><code>weight</code></td><td>体重与体成分</td></tr>
+            <tr><td><code>temperature</code></td><td>腕温 / 核心体温采样</td></tr>
+            <tr><td><code>hrv</code></td><td>HRV 记录</td></tr>
+            <tr><td><code>stress</code></td><td>每日压力</td></tr>
+            <tr><td><code>spo2</code></td><td>每日血氧</td><td><code>from_ms</code>、<code>to_ms</code>、<code>limit</code></td></tr>
+            <tr><td><code>heart_rate</code></td><td>心率采样点</td><td>同上；默认最近 24 小时</td></tr>
+            <tr><td><code>metric_points</code></td><td>通用指标时间序列</td><td>同上，另加 <code>metric</code></td></tr>
+            <tr><td><code>sleep</code></td><td>睡眠会话、卧床与分期</td><td rowspan="3"><code>from_ms</code>、<code>to_ms</code>、<code>limit</code></td></tr>
+            <tr><td><code>daily_metrics</code></td><td>每日汇总</td></tr>
+            <tr><td><code>workouts</code></td><td>运动记录</td></tr>
+            <tr><td><code>query_table</code></td><td>白名单内的任意只读健康表</td><td><code>table</code>，另加时间窗口与 <code>limit</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="section-note">
+        时间参数是 Unix 毫秒；日汇总用 <code>date_day</code>（epoch 天）。
+        <code>limit</code> 默认 200、上限 2000，结果按时间倒序。数值与列名保持
+        快照原样，不做单位换算。<code>query_table</code> 只接受健康表白名单。
+      </p>
     </div>
   </section>
 
