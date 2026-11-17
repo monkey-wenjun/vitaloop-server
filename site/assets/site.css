@@ -399,6 +399,7 @@ footer.site a { color: var(--fg-muted); }
   .hero { padding-top: 40px; }
   .hero-phone { max-width: 220px; }
   .lightbox { padding: 12px; }
+  header.site nav a:nth-child(2),
   header.site nav a:nth-child(3),
   header.site nav a:nth-child(4) { display: none; }
 }
