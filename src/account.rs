@@ -5,6 +5,7 @@
 //!   POST /v1/account/login    {"email","password"}
 //!   GET  /v1/account/me       Authorization: Bearer <token>
 //!   GET/PUT /v1/health/data   Authorization: Bearer <token>
+//!   GET/PUT /v1/account/vault Authorization: Bearer <token>
 //!   PUT  /v1/health/workouts  Authorization: Bearer <token>
 //!   GET  /v1/workouts         Authorization: Bearer <token>
 //!   GET  /v1/workouts/{id}    Authorization: Bearer <token>
@@ -188,6 +189,10 @@ fn app_config_path(root: &Path) -> PathBuf {
 
 fn profile_path(root: &Path, id: &str) -> PathBuf {
     root.join("accounts").join(id).join("profile.json")
+}
+
+fn vault_path(root: &Path, id: &str) -> PathBuf {
+    root.join("accounts").join(id).join("vault.json")
 }
 
 /// 旧客户端上传的是 gzip 快照；合并/读取运动索引前先解压。
@@ -1192,6 +1197,55 @@ fn save_profile(root: &Path, id: &str, body: &[u8]) -> (u16, &'static str, Vec<u
         .unwrap_or_else(|e| (500, "text/plain", e.into_bytes()))
 }
 
+fn read_vault(root: &Path, id: &str) -> Option<Vec<u8>> {
+    fs::read(vault_path(root, id)).ok()
+}
+
+fn save_vault(root: &Path, id: &str, body: &[u8]) -> (u16, &'static str, Vec<u8>) {
+    if body.len() > 256 * 1024 {
+        return (413, "text/plain", b"vault too large".to_vec());
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return (400, "text/plain", b"vault must be json".to_vec());
+    };
+    let Ok(value) = json::parse(text) else {
+        return (400, "text/plain", b"invalid vault json".to_vec());
+    };
+    let Some(items) = value.as_object() else {
+        return (400, "text/plain", b"vault must be object".to_vec());
+    };
+    let data = items.iter().find(|(key, _)| key == "data").map(|(_, v)| v);
+    let key_backup = items
+        .iter()
+        .find(|(key, _)| key == "key_backup")
+        .map(|(_, v)| v);
+    let (Some(Json::String(data)), Some(Json::String(key_backup))) = (data, key_backup) else {
+        return (400, "text/plain", b"missing vault strings".to_vec());
+    };
+    if data.len() > 200 * 1024 || key_backup.len() > 4 * 1024 {
+        return (413, "text/plain", b"vault too large".to_vec());
+    }
+    if let Err(e) = fs::create_dir_all(accounts_dir(root).join(id)) {
+        return (
+            500,
+            "text/plain",
+            format!("create account dir: {e}").into_bytes(),
+        );
+    }
+    let path = vault_path(root, id);
+    let tmp = path.with_extension("json.tmp");
+    let stored = format!(
+        "{{\"data\":\"{}\",\"key_backup\":\"{}\",\"updated\":{}}}",
+        json_escape(data),
+        json_escape(key_backup),
+        now()
+    );
+    fs::write(&tmp, stored)
+        .and_then(|_| fs::rename(&tmp, &path))
+        .map(|_| (200, "application/json", b"{\"ok\":true}".to_vec()))
+        .unwrap_or_else(|e| (500, "text/plain", format!("write vault: {e}").into_bytes()))
+}
+
 fn valid_email(email: &str) -> bool {
     let email = email.trim();
     email.len() >= 5
@@ -1411,6 +1465,27 @@ pub fn route(req: &Request, root: &Path) -> Option<(u16, &'static str, Vec<u8>)>
                 return Some((401, "text/plain", b"bad session".to_vec()));
             };
             Some(save_profile(root, &id, &req.body))
+        }
+        ("GET", "/v1/account/vault") => {
+            let Some(token) = bearer(req) else {
+                return Some((401, "text/plain", b"missing bearer".to_vec()));
+            };
+            let Some(id) = session_account(root, token) else {
+                return Some((401, "text/plain", b"bad session".to_vec()));
+            };
+            let Some(body) = read_vault(root, &id) else {
+                return Some((200, "application/json", b"{}".to_vec()));
+            };
+            Some((200, "application/json", body))
+        }
+        ("PUT", "/v1/account/vault") => {
+            let Some(token) = bearer(req) else {
+                return Some((401, "text/plain", b"missing bearer".to_vec()));
+            };
+            let Some(id) = session_account(root, token) else {
+                return Some((401, "text/plain", b"bad session".to_vec()));
+            };
+            Some(save_vault(root, &id, &req.body))
         }
         ("GET", "/v1/account/me") => {
             let Some(token) = bearer(req) else {
@@ -2261,6 +2336,48 @@ mod tests {
         assert_eq!(
             json_string(&body, "nickname").as_deref(),
             Some("\u{5143}\u{73af}")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn account_vault_roundtrips() {
+        let root = dir();
+        let register = Request {
+            method: "POST".into(),
+            path: "/v1/account/register".into(),
+            headers: HashMap::new(),
+            body: br#"{"email":"vault@example.com","password":"12345678"}"#.to_vec(),
+        };
+        let (_, _, body) = route(&register, &root).unwrap();
+        let token = json_string(&body, "token").unwrap();
+        let headers = HashMap::from([("authorization".into(), format!("Bearer {token}"))]);
+
+        let payload =
+            r#"{"data":"{\"salt\":\"\",\"nonce\":\"\",\"blob\":\"\"}","key_backup":"encrypted"}"#;
+        let put = Request {
+            method: "PUT".into(),
+            path: "/v1/account/vault".into(),
+            headers: headers.clone(),
+            body: payload.as_bytes().to_vec(),
+        };
+        assert_eq!(route(&put, &root).unwrap().0, 200);
+
+        let get = Request {
+            method: "GET".into(),
+            path: "/v1/account/vault".into(),
+            headers,
+            body: Vec::new(),
+        };
+        let (code, _, body) = route(&get, &root).unwrap();
+        assert_eq!(code, 200);
+        assert_eq!(
+            json_string(&body, "data").as_deref(),
+            Some(r#"{"salt":"","nonce":"","blob":""}"#)
+        );
+        assert_eq!(
+            json_string(&body, "key_backup").as_deref(),
+            Some("encrypted")
         );
         let _ = fs::remove_dir_all(root);
     }
